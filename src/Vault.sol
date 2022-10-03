@@ -355,8 +355,8 @@ contract Vault {
             itemType: listingDetails.itemType,
             token: listingDetails.token,
             identifierOrCriteria: listingDetails.identifier,
-            startAmount: 1,
-            endAmount: 1
+            startAmount: listingDetails.amount,
+            endAmount: listingDetails.amount
         });
 
         // Keep track of the total payment amount

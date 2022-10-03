@@ -2,30 +2,31 @@
 pragma solidity ^0.8.17;
 
 import {Test} from "forge-std/Test.sol";
-import {Merkle} from "murky/Merkle.sol";
-import {ERC721} from "openzeppelin/token/ERC721/ERC721.sol";
+import {ERC1155} from "openzeppelin/token/ERC1155/ERC1155.sol";
 
 import {Forward} from "../src/Forward.sol";
 import {Vault} from "../src/Vault.sol";
-import {ERC721VaultUnlocker} from "../src/VaultUnlocker.sol";
+import {ERC1155VaultUnlocker} from "../src/VaultUnlocker.sol";
 import {ISeaport} from "../src/interfaces/ISeaport.sol";
 import {IWETH} from "../src/interfaces/IWETH.sol";
 
-contract NFT is ERC721 {
+contract NFT is ERC1155 {
     address[] private recipients;
     uint256[] private bps;
 
     constructor(address[] memory _recipients, uint256[] memory _bps)
-        ERC721("NFT", "NFT")
+        ERC1155("")
     {
         setRoyalties(_recipients, _bps);
     }
 
-    function mint(uint256 tokenId) external {
-        _mint(msg.sender, tokenId);
+    function mint(uint256 tokenId, uint256 amount) external {
+        _mint(msg.sender, tokenId, amount, "");
     }
 
-    function setRoyalties(address[] memory _recipients, uint256[] memory _bps) public {
+    function setRoyalties(address[] memory _recipients, uint256[] memory _bps)
+        public
+    {
         delete recipients;
         delete bps;
 
@@ -48,9 +49,9 @@ contract NFT is ERC721 {
     }
 }
 
-contract ERC721Test is Test {
+contract ERC1155Test is Test {
     Forward internal forward;
-    ERC721VaultUnlocker internal vaultUnlocker;
+    ERC1155VaultUnlocker internal vaultUnlocker;
 
     IWETH internal WETH;
 
@@ -64,7 +65,7 @@ contract ERC721Test is Test {
 
     function setUp() public {
         forward = new Forward();
-        vaultUnlocker = new ERC721VaultUnlocker();
+        vaultUnlocker = new ERC1155VaultUnlocker();
 
         WETH = IWETH(address(forward.WETH()));
 
@@ -129,8 +130,8 @@ contract ERC721Test is Test {
         // Generate bid
         bid = Forward.Bid({
             itemKind: identifierOrCriteria < 10000
-                ? Forward.ItemKind.ERC721
-                : Forward.ItemKind.ERC721_WITH_CRITERIA,
+                ? Forward.ItemKind.ERC1155
+                : Forward.ItemKind.ERC1155_WITH_CRITERIA,
             maker: maker,
             token: address(nft),
             identifierOrCriteria: identifierOrCriteria,
@@ -158,6 +159,7 @@ contract ERC721Test is Test {
         uint256 makerPk,
         NFT nft,
         uint256 identifier,
+        uint256 amount,
         uint256 unitPrice
     ) internal returns (ISeaport.Order memory order) {
         address maker = vm.addr(makerPk);
@@ -192,11 +194,11 @@ contract ERC721Test is Test {
 
         // Populate the listing' offer items
         parameters.offer[0] = ISeaport.OfferItem(
-            ISeaport.ItemType.ERC721,
+            ISeaport.ItemType.ERC1155,
             address(nft),
             identifier,
-            1,
-            1
+            amount,
+            amount
         );
 
         // Populate the listing's consideration items
@@ -204,8 +206,8 @@ contract ERC721Test is Test {
             ISeaport.ItemType.NATIVE,
             address(0),
             0,
-            (unitPrice * (10000 - totalRoyaltyBps)) / 10000,
-            (unitPrice * (10000 - totalRoyaltyBps)) / 10000,
+            (unitPrice * amount * (10000 - totalRoyaltyBps)) / 10000,
+            (unitPrice * amount * (10000 - totalRoyaltyBps)) / 10000,
             parameters.offerer
         );
         for (uint256 i = 0; i < royaltiesCount; i++) {
@@ -213,8 +215,8 @@ contract ERC721Test is Test {
                 ISeaport.ItemType.NATIVE,
                 address(0),
                 0,
-                (unitPrice * royaltyBps[i]) / 10000,
-                (unitPrice * royaltyBps[i]) / 10000,
+                (unitPrice * amount * royaltyBps[i]) / 10000,
+                (unitPrice * amount * royaltyBps[i]) / 10000,
                 royaltyRecipients[i]
             );
         }
@@ -262,10 +264,10 @@ contract ERC721Test is Test {
         // Encode the listing data in the EIP1271 order signature
         order.signature = abi.encode(
             Vault.SeaportListingDetails({
-                itemType: ISeaport.ItemType.ERC721,
+                itemType: ISeaport.ItemType.ERC1155,
                 token: address(nft),
                 identifier: identifier,
-                amount: 1,
+                amount: amount,
                 startTime: parameters.startTime,
                 endTime: parameters.endTime,
                 salt: parameters.salt,
@@ -279,7 +281,9 @@ contract ERC721Test is Test {
 
     function testFillSingleTokenBid() public {
         uint256 identifier = 1;
-        uint256 unitPrice = 1 ether;
+        uint128 amount = 10;
+        uint128 fillAmount = 3;
+        uint256 unitPrice = 0.1 ether;
         (
             address[] memory royaltyRecipients,
             uint256[] memory royaltyBps,
@@ -295,99 +299,55 @@ contract ERC721Test is Test {
                 alicePk,
                 identifier,
                 unitPrice,
-                1,
+                amount,
                 royaltyRecipients,
                 royaltyBps
             );
 
         // Fill bid
         vm.startPrank(bob);
-        nft.mint(identifier);
+        nft.mint(identifier, fillAmount);
         nft.setApprovalForAll(address(forward), true);
         forward.fill(
-            Forward.FillDetails({bid: bid, signature: signature, fillAmount: 1})
-        );
-        vm.stopPrank();
-
-        // Ensure the taker got the payment from the bid
-        require(WETH.balanceOf(bob) == (unitPrice * (10000 - totalBps)) / 10000);
-
-        // Ensure the royalties got locked in the maker's vault
-        require(WETH.balanceOf(address(vault)) == (unitPrice * totalBps) / 10000);
-
-        // Ensure the token got locked in the maker's vault
-        require(nft.ownerOf(identifier) == address(vault));
-
-        // Cannot fill an order for which the fillable quantity got to zero
-        vm.expectRevert(Forward.InsufficientAmountAvailable.selector);
-        vm.prank(bob);
-        forward.fill(
-            Forward.FillDetails({bid: bid, signature: signature, fillAmount: 1})
-        );
-    }
-
-    function testFillCriteriaBid() public {
-        Merkle merkle = new Merkle();
-
-        bytes32[] memory identifiers = new bytes32[](4);
-        identifiers[0] = keccak256(abi.encode(uint256(1)));
-        identifiers[1] = keccak256(abi.encode(uint256(2)));
-        identifiers[2] = keccak256(abi.encode(uint256(3)));
-        identifiers[3] = keccak256(abi.encode(uint256(4)));
-
-        uint256 criteria = uint256(merkle.getRoot(identifiers));
-
-        uint256 identifier = 1;
-        bytes32[] memory criteriaProof = merkle.getProof(identifiers, 0);
-
-        uint256 unitPrice = 1 ether;
-        (
-            address[] memory royaltyRecipients,
-            uint256[] memory royaltyBps,
-            uint256 totalBps
-        ) = generateRoyalties(3, 0);
-
-        (
-            NFT nft,
-            Vault vault,
-            Forward.Bid memory bid,
-            bytes memory signature
-        ) = generateForwardBid(
-                alicePk,
-                criteria,
-                unitPrice,
-                1,
-                royaltyRecipients,
-                royaltyBps
-            );
-
-        // Fill bid
-        vm.startPrank(bob);
-        nft.mint(identifier);
-        nft.setApprovalForAll(address(forward), true);
-        forward.fillWithCriteria(
             Forward.FillDetails({
                 bid: bid,
                 signature: signature,
-                fillAmount: 1
-            }),
-            identifier,
-            criteriaProof
+                fillAmount: fillAmount
+            })
         );
         vm.stopPrank();
 
         // Ensure the taker got the payment from the bid
-        require(WETH.balanceOf(bob) == (unitPrice * (10000 - totalBps)) / 10000);
+        require(
+            WETH.balanceOf(bob) ==
+                (unitPrice * fillAmount * (10000 - totalBps)) / 10000
+        );
 
         // Ensure the royalties got locked in the maker's vault
-        require(WETH.balanceOf(address(vault)) == (unitPrice * totalBps) / 10000);
+        require(
+            WETH.balanceOf(address(vault)) ==
+                (unitPrice * fillAmount * totalBps) / 10000
+        );
 
         // Ensure the token got locked in the maker's vault
-        require(nft.ownerOf(identifier) == address(vault));
+        require(nft.balanceOf(address(vault), identifier) == fillAmount);
+
+        // Cannot fill more than the available fill amount
+        vm.expectRevert(Forward.InsufficientAmountAvailable.selector);
+        vm.prank(bob);
+        forward.fill(
+            Forward.FillDetails({
+                bid: bid,
+                signature: signature,
+                fillAmount: amount - fillAmount + 1
+            })
+        );
     }
 
     function testListingFromVault() public {
         uint256 identifier = 1;
+        uint128 amount = 5;
+        uint128 fillAmount = 3;
         uint256 bidUnitPrice = 1 ether;
         (
             address[] memory royaltyRecipients,
@@ -404,38 +364,46 @@ contract ERC721Test is Test {
                 alicePk,
                 identifier,
                 bidUnitPrice,
-                1,
+                amount,
                 royaltyRecipients,
                 royaltyBps
             );
 
         // Fill bid
         vm.startPrank(bob);
-        nft.mint(identifier);
+        nft.mint(identifier, fillAmount);
         nft.setApprovalForAll(address(forward), true);
         forward.fill(
-            Forward.FillDetails({bid: bid, signature: signature, fillAmount: 1})
+            Forward.FillDetails({
+                bid: bid,
+                signature: signature,
+                fillAmount: fillAmount
+            })
         );
         vm.stopPrank();
 
-        uint256 listingPrice = 1.5 ether;
+        uint256 listingUnitPrice = 1.5 ether;
         ISeaport.Order memory order = generateSeaportListing(
             alicePk,
             nft,
             identifier,
-            listingPrice
+            fillAmount,
+            listingUnitPrice
         );
 
         // Fill listing
         vm.startPrank(carol);
-        vault.SEAPORT().fulfillOrder{value: listingPrice}(order, bytes32(0));
+        vault.SEAPORT().fulfillOrder{value: listingUnitPrice * fillAmount}(
+            order,
+            bytes32(0)
+        );
         vm.stopPrank();
 
         uint256 makerWETHBalanceBefore = WETH.balanceOf(alice);
 
         // Unlock royalties
         vm.prank(alice);
-        vault.unlockERC721(nft, identifier);
+        vault.unlockERC1155(nft, identifier, fillAmount);
 
         uint256 makerWETHBalanceAfter = WETH.balanceOf(alice);
 
@@ -450,17 +418,20 @@ contract ERC721Test is Test {
         // Ensure the maker got the locked royalties refunded
         require(
             makerWETHBalanceAfter - makerWETHBalanceBefore ==
-                (bidUnitPrice * totalBps) / 10000
+                (bidUnitPrice * fillAmount * totalBps) / 10000
         );
     }
 
-    function testListingFromVaultWithAutomaticUnlock() public {
+    function testUnlocks() public {
         uint256 identifier = 1;
+        uint128 amount = 5;
+        uint128 bidFillAmount = 3;
         uint256 bidUnitPrice = 1 ether;
         (
             address[] memory royaltyRecipients,
             uint256[] memory royaltyBps,
-        ) = generateRoyalties(2, 0);
+            uint256 totalBps
+        ) = generateRoyalties(3, 0);
 
         (
             NFT nft,
@@ -471,149 +442,64 @@ contract ERC721Test is Test {
                 alicePk,
                 identifier,
                 bidUnitPrice,
-                1,
+                amount,
                 royaltyRecipients,
                 royaltyBps
             );
 
         // Fill bid
         vm.startPrank(bob);
-        nft.mint(identifier);
+        nft.mint(identifier, bidFillAmount);
         nft.setApprovalForAll(address(forward), true);
         forward.fill(
-            Forward.FillDetails({bid: bid, signature: signature, fillAmount: 1})
+            Forward.FillDetails({
+                bid: bid,
+                signature: signature,
+                fillAmount: bidFillAmount
+            })
         );
         vm.stopPrank();
 
-        uint256 listingPrice = 1.5 ether;
+        uint256 listingUnitPrice = 1.5 ether;
+        uint256 listingFillAmount = 1;
         ISeaport.Order memory order = generateSeaportListing(
             alicePk,
             nft,
             identifier,
-            listingPrice
+            listingFillAmount,
+            listingUnitPrice
         );
-
-        // Tweak the order to include the unlock consideration as a tip
-        ISeaport.ConsiderationItem[]
-            memory consideration = new ISeaport.ConsiderationItem[](
-                order.parameters.consideration.length + 1
-            );
-        for (uint256 i = 0; i < order.parameters.consideration.length; i++) {
-            consideration[i] = order.parameters.consideration[i];
-        }
-        consideration[consideration.length - 1] = ISeaport.ConsiderationItem({
-            itemType: ISeaport.ItemType.ERC1155,
-            token: address(vaultUnlocker),
-            // id
-            identifierOrCriteria: uint256(uint160(address(nft))),
-            // value
-            startAmount: identifier,
-            endAmount: identifier,
-            // to
-            recipient: address(vault)
-        });
-        order.parameters.consideration = consideration;
 
         // Fill listing
         vm.startPrank(carol);
-        vault.SEAPORT().fulfillOrder{value: listingPrice}(order, bytes32(0));
+        vault.SEAPORT().fulfillOrder{
+            value: listingUnitPrice * listingFillAmount
+        }(order, bytes32(0));
         vm.stopPrank();
 
-        // Ensure the royalties got unlocked from the vault
-        require(WETH.balanceOf(address(vault)) == 0);
-    }
+        uint256 makerWETHBalanceBefore = WETH.balanceOf(alice);
 
-    function testForceUnlock() public {
-        uint256 identifier = 1;
-        uint256 bidUnitPrice = 1 ether;
-        (
-            address[] memory royaltyRecipients,
-            uint256[] memory royaltyBps,
-        ) = generateRoyalties(2, 0);
-
-        (
-            NFT nft,
-            Vault vault,
-            Forward.Bid memory bid,
-            bytes memory signature
-        ) = generateForwardBid(
-                alicePk,
-                identifier,
-                bidUnitPrice,
-                1,
-                royaltyRecipients,
-                royaltyBps
-            );
-
-        // Fill bid
-        vm.startPrank(bob);
-        nft.mint(identifier);
-        nft.setApprovalForAll(address(forward), true);
-        forward.fill(
-            Forward.FillDetails({bid: bid, signature: signature, fillAmount: 1})
-        );
-        vm.stopPrank();
-
+        // Unlock royalties
         vm.prank(alice);
-        vault.unlockERC721(nft, identifier);
+        vault.unlockERC1155(nft, identifier, bidFillAmount);
 
-        // Ensure the royalties got unlocked from the vault
-        require(WETH.balanceOf(address(vault)) == 0);
+        uint256 makerWETHBalanceAfter = WETH.balanceOf(alice);
 
-        // Ensure the royalties got paid
+        // Ensure the royalties corresponding to the accepted listing's amount got refunded to the maker
+        require(
+            makerWETHBalanceAfter - makerWETHBalanceBefore ==
+                (bidUnitPrice * listingFillAmount * totalBps) / 10000
+        );
+
+        // Ensure the royalties corresponding to the still locked amount got paid
         for (uint256 i = 0; i < royaltyBps.length; i++) {
-            require(WETH.balanceOf(royaltyRecipients[i]) == bidUnitPrice * royaltyBps[i] / 10000);
-        }
-    }
-
-    function testUpdatedRoyalties() public {
-        uint256 identifier = 1;
-        uint256 bidUnitPrice = 1 ether;
-        (
-            address[] memory royaltyRecipients,
-            uint256[] memory royaltyBps,
-        ) = generateRoyalties(2, 0);
-
-        (
-            NFT nft,
-            Vault vault,
-            Forward.Bid memory bid,
-            bytes memory signature
-        ) = generateForwardBid(
-                alicePk,
-                identifier,
-                bidUnitPrice,
-                1,
-                royaltyRecipients,
-                royaltyBps
+            require(
+                WETH.balanceOf(royaltyRecipients[i]) ==
+                    (bidUnitPrice *
+                        (bidFillAmount - listingFillAmount) *
+                        royaltyBps[i]) /
+                        10000
             );
-
-        // Fill bid
-        vm.startPrank(bob);
-        nft.mint(identifier);
-        nft.setApprovalForAll(address(forward), true);
-        forward.fill(
-            Forward.FillDetails({bid: bid, signature: signature, fillAmount: 1})
-        );
-        vm.stopPrank();
-
-        // Update royalties
-        (
-            address[] memory newRoyaltyRecipients,
-            uint256[] memory newRoyaltyBps,
-            uint256 newTotalBps
-        ) = generateRoyalties(3, 1);
-        nft.setRoyalties(newRoyaltyRecipients, newRoyaltyBps);
-
-        // Fetch the locked royalty amount
-        uint256 lockedRoyalty = vault.erc721Locks(keccak256(abi.encode(address(nft), identifier)));
-
-        vm.prank(alice);
-        vault.unlockERC721(nft, identifier);
-
-        // Ensure the royalties got paid to the new recipients
-        for (uint256 i = 0; i < newRoyaltyBps.length; i++) {
-            require(WETH.balanceOf(newRoyaltyRecipients[i]) == lockedRoyalty * newRoyaltyBps[i] / newTotalBps);
         }
     }
 }

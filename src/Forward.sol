@@ -29,7 +29,7 @@ contract Forward {
         address maker;
         address token;
         uint256 identifierOrCriteria;
-        uint256 price;
+        uint256 unitPrice;
         uint128 amount;
         uint128 salt;
         uint256 expiration;
@@ -73,7 +73,7 @@ contract Forward {
         address taker,
         address token,
         uint256 identifier,
-        uint256 price,
+        uint256 unitPrice,
         uint128 amount
     );
     event CounterIncremented(uint256 newCounter, address maker);
@@ -88,6 +88,8 @@ contract Forward {
 
     bytes32 public immutable DOMAIN_SEPARATOR;
     bytes32 public immutable BID_TYPEHASH;
+
+    // Private constants
 
     Vault private immutable vaultImplementation;
 
@@ -133,7 +135,7 @@ contract Forward {
                 "address maker,",
                 "address token,",
                 "uint256 identifierOrCriteria,",
-                "uint256 price,",
+                "uint256 unitPrice,",
                 "uint128 amount,",
                 "uint128 salt,",
                 "uint256 expiration,",
@@ -240,7 +242,7 @@ contract Forward {
                 bid.maker,
                 bid.token,
                 bid.identifierOrCriteria,
-                bid.price,
+                bid.unitPrice,
                 bid.amount,
                 bid.salt,
                 bid.expiration,
@@ -285,14 +287,14 @@ contract Forward {
         (, uint256[] memory royaltyAmounts) = ROYALTY_ENGINE.getRoyaltyView(
             address(details.bid.token),
             identifier,
-            details.bid.price
+            details.bid.unitPrice * details.fillAmount
         );
 
         // Compute the total royalty amount
         uint256 totalRoyaltyAmount;
         uint256 royaltiesLength = royaltyAmounts.length;
         for (uint256 i = 0; i < royaltiesLength; ) {
-            totalRoyaltyAmount += royaltyAmounts[i] * details.fillAmount;
+            totalRoyaltyAmount += royaltyAmounts[i];
 
             unchecked {
                 ++i;
@@ -303,7 +305,7 @@ contract Forward {
         WETH.transferFrom(
             details.bid.maker,
             msg.sender,
-            details.bid.price - totalRoyaltyAmount
+            details.bid.unitPrice * details.fillAmount - totalRoyaltyAmount
         );
 
         // Lock the royalty in the maker's vault
@@ -360,7 +362,7 @@ contract Forward {
             msg.sender,
             details.bid.token,
             identifier,
-            details.bid.price,
+            details.bid.unitPrice,
             details.fillAmount
         );
     }
