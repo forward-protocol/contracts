@@ -44,10 +44,11 @@ contract Vault {
 
     // Errors
 
+    error AlreadyInitialized();
+
     error InvalidListing();
 
     error Unauthorized();
-
     error UnsuccessfulCall();
 
     // Public constants
@@ -68,12 +69,12 @@ contract Vault {
     address public constant SEAPORT_OPENSEA_CONDUIT =
         0x1E0049783F008A0085193E00003D00cd54003c71;
 
-    bytes32 public immutable SEAPORT_DOMAIN_SEPARATOR;
+    bytes32 public SEAPORT_DOMAIN_SEPARATOR;
 
     // Public fields
 
-    address public immutable deployer;
-    address public immutable owner;
+    address public exchange;
+    address public owner;
 
     // Private fields
 
@@ -82,8 +83,12 @@ contract Vault {
 
     // Constructor
 
-    constructor(address _owner) {
-        deployer = msg.sender;
+    function initialize(address _exchange, address _owner) public {
+        if (exchange != address(0)) {
+            revert AlreadyInitialized();
+        }
+
+        exchange = _exchange;
         owner = _owner;
 
         // Cache the Seaport EIP712 domain separator
@@ -107,7 +112,7 @@ contract Vault {
         uint256 royalty
     ) external {
         // Only the deployer can lock tokens
-        if (msg.sender != deployer) {
+        if (msg.sender != exchange) {
             revert Unauthorized();
         }
 
@@ -139,7 +144,7 @@ contract Vault {
         uint256 royalty
     ) external {
         // Only the deployer can lock tokens
-        if (msg.sender != deployer) {
+        if (msg.sender != exchange) {
             revert Unauthorized();
         }
 
@@ -455,7 +460,7 @@ contract Vault {
         uint256, // tokenId
         bytes calldata // data
     ) external view returns (bytes4) {
-        if (operator != deployer) {
+        if (operator != exchange) {
             revert Unauthorized();
         }
 
@@ -471,7 +476,7 @@ contract Vault {
         uint256, // value
         bytes calldata // data
     ) external view returns (bytes4) {
-        if (operator != deployer) {
+        if (operator != exchange) {
             revert Unauthorized();
         }
 

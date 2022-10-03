@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
+import {Clones} from "openzeppelin/proxy/Clones.sol";
 import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin/token/ERC20/utils/SafeERC20.sol";
 import {IERC721} from "openzeppelin/token/ERC721/IERC721.sol";
@@ -11,6 +12,7 @@ import {Vault} from "./Vault.sol";
 import {IRoyaltyEngine} from "./interfaces/IRoyaltyEngine.sol";
 
 contract Forward {
+    using Clones for address;
     using SafeERC20 for IERC20;
 
     // Structs and enums
@@ -87,6 +89,8 @@ contract Forward {
     bytes32 public immutable DOMAIN_SEPARATOR;
     bytes32 public immutable BID_TYPEHASH;
 
+    Vault private immutable vaultImplementation;
+
     // Public fields
 
     mapping(bytes32 => BidStatus) public bidStatuses;
@@ -96,6 +100,8 @@ contract Forward {
     // Constructor
 
     constructor() {
+        vaultImplementation = new Vault();
+
         uint256 chainId;
         assembly {
             chainId := chainid()
@@ -146,8 +152,16 @@ contract Forward {
             revert ExistingVault();
         }
 
-        // TODO: Use gas-efficient clones
-        vault = new Vault(msg.sender);
+        // Deploy and initialize the vault
+        vault = Vault(
+            payable(
+                address(vaultImplementation).cloneDeterministic(
+                    keccak256(abi.encodePacked(msg.sender))
+                )
+            )
+        );
+        vault.initialize(address(this), msg.sender);
+
         vaults[msg.sender] = vault;
 
         emit VaultCreated(msg.sender, address(vault));
