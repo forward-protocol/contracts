@@ -77,8 +77,8 @@ contract Vault {
 
     // Private fields
 
-    mapping(bytes32 => ERC721Lock) private erc721Locks;
-    mapping(bytes32 => ERC1155Lock) private erc1155Locks;
+    mapping(bytes32 => ERC721Lock) public erc721Locks;
+    mapping(bytes32 => ERC1155Lock) public erc1155Locks;
 
     // Constructor
 
