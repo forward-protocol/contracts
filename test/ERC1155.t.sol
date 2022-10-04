@@ -502,4 +502,65 @@ contract ERC1155Test is Test {
             );
         }
     }
+
+    function testLowListingRoyalties() public {
+        uint256 identifier = 1;
+        uint128 amount = 4;
+        uint128 fillAmount = 3;
+        uint256 bidUnitPrice = 1 ether;
+        (
+            address[] memory royaltyRecipients,
+            uint256[] memory royaltyBps,
+
+        ) = generateRoyalties(3, 0);
+
+        (
+            NFT nft,
+            Vault vault,
+            Forward.Bid memory bid,
+            bytes memory signature
+        ) = generateForwardBid(
+                alicePk,
+                identifier,
+                bidUnitPrice,
+                amount,
+                royaltyRecipients,
+                royaltyBps
+            );
+
+        // Fill bid
+        vm.startPrank(bob);
+        nft.mint(identifier, fillAmount);
+        nft.setApprovalForAll(address(forward), true);
+        forward.fill(
+            Forward.FillDetails({
+                bid: bid,
+                signature: signature,
+                fillAmount: fillAmount
+            })
+        );
+        vm.stopPrank();
+
+        uint256 minDiffBps = forward.minDiffBps();
+
+        uint256 listingAmount = 2;
+        uint256 listingPrice = (bidUnitPrice * minDiffBps) / 10000 - 1;
+        ISeaport.Order memory order = generateSeaportListing(
+            alicePk,
+            nft,
+            identifier,
+            listingAmount,
+            listingPrice
+        );
+
+        // Cannot fill an order for which the royalties are not within the protocol threshold
+        vm.startPrank(carol);
+        ISeaport seaport = vault.SEAPORT();
+        vm.expectRevert(Vault.InvalidListing.selector);
+        seaport.fulfillOrder{value: listingPrice * listingAmount}(
+            order,
+            bytes32(0)
+        );
+        vm.stopPrank();
+    }
 }
