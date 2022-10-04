@@ -7,6 +7,7 @@ import {IERC721} from "openzeppelin/token/ERC721/IERC721.sol";
 import {IERC1155} from "openzeppelin/token/ERC1155/IERC1155.sol";
 import {ECDSA} from "openzeppelin/utils/cryptography/ECDSA.sol";
 
+import {Forward} from "./Forward.sol";
 import {IRoyaltyEngine} from "./interfaces/IRoyaltyEngine.sol";
 import {ISeaport} from "./interfaces/ISeaport.sol";
 
@@ -69,11 +70,12 @@ contract Vault {
     address public constant SEAPORT_OPENSEA_CONDUIT =
         0x1E0049783F008A0085193E00003D00cd54003c71;
 
+    // TODO: Pre-compute and store as constant
     bytes32 public SEAPORT_DOMAIN_SEPARATOR;
 
     // Public fields
 
-    address public exchange;
+    Forward public forward;
     address public owner;
 
     // Private fields
@@ -83,12 +85,12 @@ contract Vault {
 
     // Constructor
 
-    function initialize(address _exchange, address _owner) public {
-        if (exchange != address(0)) {
+    function initialize(address _forward, address _owner) public {
+        if (address(forward) != address(0)) {
             revert AlreadyInitialized();
         }
 
-        exchange = _exchange;
+        forward = Forward(_forward);
         owner = _owner;
 
         // Cache the Seaport EIP712 domain separator
@@ -111,8 +113,8 @@ contract Vault {
         uint256 identifier,
         uint256 royalty
     ) external {
-        // Only the deployer can lock tokens
-        if (msg.sender != exchange) {
+        // Only the protocol can lock tokens
+        if (msg.sender != address(forward)) {
             revert Unauthorized();
         }
 
@@ -143,8 +145,8 @@ contract Vault {
         uint256 amount,
         uint256 royalty
     ) external {
-        // Only the deployer can lock tokens
-        if (msg.sender != exchange) {
+        // Only the protocol can lock tokens
+        if (msg.sender != address(forward)) {
             revert Unauthorized();
         }
 
@@ -211,6 +213,7 @@ contract Vault {
                     // Seaport listing (enforced to be paying out royalties) so we
                     // refund the locked royalties to the vault owner.
                     tokenOwner == address(this) ? royaltyRecipients[i] : owner,
+                    // Split the locked royalties pro-rata
                     (lockedRoyalty * royaltyAmounts[i]) / totalRoyaltyAmount
                 );
 
@@ -235,11 +238,12 @@ contract Vault {
         // Fetch the vault's token balance
         uint256 tokenBalance = token.balanceOf(address(this), identifier);
 
-        // Any locked amount greater than the vault's balance is assumed to have been unlocked
+        // Assume any locked amount greater than the vault's has been unlocked
         uint256 unlockedAmount = lock.amount >= tokenBalance
             ? lock.amount - tokenBalance
             : 0;
 
+        // Determine locked/unlocked amounts
         uint256 amountWithLockedRoyalties;
         uint256 amountWithUnlockedRoyalties;
         if (amount > unlockedAmount) {
@@ -273,6 +277,7 @@ contract Vault {
             ) = ROYALTY_ENGINE.getRoyaltyView(
                     address(token),
                     identifier,
+                    // The locked royalties are averaged across the number of locked tokens
                     (lock.royalty * amount) / lock.amount
                 );
 
@@ -293,6 +298,7 @@ contract Vault {
             for (i = 0; i < royaltiesLength; ) {
                 uint256 payout;
 
+                // Royalties corresponding to a locked amount is paid out
                 if (amountWithLockedRoyalties > 0) {
                     payout =
                         (lock.royalty *
@@ -305,6 +311,7 @@ contract Vault {
                     WETH.safeTransfer(royaltyRecipients[i], payout);
                 }
 
+                // Royalties corresponding to an unlocked amount is refunded
                 if (amountWithUnlockedRoyalties > 0) {
                     payout =
                         (lock.royalty *
@@ -337,7 +344,7 @@ contract Vault {
     {
         // Ensure any Seaport order originating from this vault is a listing
         // in the native token which is paying out the correct royalties (as
-        // specified via the royalty registry)
+        // specified via the royalty registry).
 
         (
             SeaportListingDetails memory listingDetails,
@@ -392,6 +399,21 @@ contract Vault {
         }
 
         {
+            uint256 minDiffBps = forward.minDiffBps();
+
+            // Determine the average locked royalty per token unit
+            uint256 lockedRoyaltyPerUnit;
+            bytes32 itemHash = keccak256(
+                abi.encode(listingDetails.token, listingDetails.identifier)
+            );
+            if (listingDetails.itemType == ISeaport.ItemType.ERC721) {
+                lockedRoyaltyPerUnit = erc721Locks[itemHash].royalty;
+            } else {
+                lockedRoyaltyPerUnit =
+                    erc1155Locks[itemHash].royalty /
+                    erc1155Locks[itemHash].amount;
+            }
+
             // Fetch the item's royalties
             (
                 address[] memory royaltyRecipients,
@@ -403,6 +425,7 @@ contract Vault {
                 );
 
             // Ensure the royalties are present in the payment items
+            uint256 totalRoyaltyAmount;
             uint256 diff = paymentsLength - royaltyAmounts.length;
             for (uint256 i = diff; i < paymentsLength; ) {
                 if (
@@ -412,9 +435,20 @@ contract Vault {
                     revert InvalidListing();
                 }
 
+                totalRoyaltyAmount += royaltyAmounts[i - diff];
+
                 unchecked {
                     ++i;
                 }
+            }
+
+            uint256 currentRoyaltyPerUnit = totalRoyaltyAmount /
+                listingDetails.amount;
+            if (
+                currentRoyaltyPerUnit <
+                (lockedRoyaltyPerUnit * minDiffBps) / 10000
+            ) {
+                revert InvalidListing();
             }
         }
 
@@ -460,7 +494,8 @@ contract Vault {
         uint256, // tokenId
         bytes calldata // data
     ) external view returns (bytes4) {
-        if (operator != exchange) {
+        // Only the protocol can send tokens
+        if (operator != address(forward)) {
             revert Unauthorized();
         }
 
@@ -476,7 +511,8 @@ contract Vault {
         uint256, // value
         bytes calldata // data
     ) external view returns (bytes4) {
-        if (operator != exchange) {
+        // Only the protocol can send tokens
+        if (operator != address(forward)) {
             revert Unauthorized();
         }
 

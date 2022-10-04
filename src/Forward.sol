@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
+import {Ownable} from "openzeppelin/access/Ownable.sol";
 import {Clones} from "openzeppelin/proxy/Clones.sol";
 import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin/token/ERC20/utils/SafeERC20.sol";
@@ -11,7 +12,7 @@ import {ECDSA} from "openzeppelin/utils/cryptography/ECDSA.sol";
 import {Vault} from "./Vault.sol";
 import {IRoyaltyEngine} from "./interfaces/IRoyaltyEngine.sol";
 
-contract Forward {
+contract Forward is Ownable {
     using Clones for address;
     using SafeERC20 for IERC20;
 
@@ -53,9 +54,9 @@ contract Forward {
     error InvalidBid();
 
     error InsufficientAmountAvailable();
-    error InvalidFillAmount();
-
     error InvalidCriteriaProof();
+    error InvalidFillAmount();
+    error InvalidMinDiffBps();
     error InvalidSignature();
 
     error ExistingVault();
@@ -67,8 +68,11 @@ contract Forward {
 
     event VaultCreated(address owner, address vault);
 
+    event MinDiffBpsUpdated(uint256 newMinDiffBps);
+
     event BidCancelled(bytes32 bidHash);
     event BidFilled(
+        bytes32 bidHash,
         address maker,
         address taker,
         address token,
@@ -91,9 +95,16 @@ contract Forward {
 
     // Private constants
 
+    // Implementation contract for EIP1167 user vault proxies
     Vault private immutable vaultImplementation;
 
     // Public fields
+
+    // The royalties of all listings from the user vaults must be
+    // within `minDiffBps` of the bid royalties, otherwise it can
+    // be possible to evade paying the royalties by using private
+    // listings with a zero (or very low) price.
+    uint256 public minDiffBps;
 
     mapping(bytes32 => BidStatus) public bidStatuses;
     mapping(address => uint256) public counters;
@@ -102,6 +113,10 @@ contract Forward {
     // Constructor
 
     constructor() {
+        // Initially set to 50%
+        minDiffBps = 5000;
+
+        // Deploy the implementation contract all vault proxies will point to
         vaultImplementation = new Vault();
 
         uint256 chainId;
@@ -109,7 +124,7 @@ contract Forward {
             chainId := chainid()
         }
 
-        // TODO: Precompute and store as a constant
+        // TODO: Pre-compute and store as a constant
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
                 keccak256(
@@ -127,7 +142,7 @@ contract Forward {
             )
         );
 
-        // TODO: Precompute and store as a constant
+        // TODO: Pre-compute and store as a constant
         BID_TYPEHASH = keccak256(
             abi.encodePacked(
                 "Bid(",
@@ -145,6 +160,18 @@ contract Forward {
         );
     }
 
+    // Restricted methods
+
+    function updateMinDiffBps(uint256 newMinDiffBps) external onlyOwner {
+        // Ensure the new value is a valid bps
+        if (newMinDiffBps > 10000) {
+            revert InvalidMinDiffBps();
+        }
+
+        minDiffBps = newMinDiffBps;
+        emit MinDiffBpsUpdated(newMinDiffBps);
+    }
+
     // Public methods
 
     function createVault() external returns (Vault vault) {
@@ -154,7 +181,7 @@ contract Forward {
             revert ExistingVault();
         }
 
-        // Deploy and initialize the vault
+        // Deploy and initialize the vault using EIP1167
         vault = Vault(
             payable(
                 address(vaultImplementation).cloneDeterministic(
@@ -164,6 +191,7 @@ contract Forward {
         );
         vault.initialize(address(this), msg.sender);
 
+        // Associate the vault to the sender
         vaults[msg.sender] = vault;
 
         emit VaultCreated(msg.sender, address(vault));
@@ -225,6 +253,9 @@ contract Forward {
     }
 
     function incrementCounter() external {
+        // Similar to Seaport's implementation, incrementing the counter
+        // will cancel any orders which were signed with a counter value
+        // which is a lower than the updated value.
         uint256 newCounter;
         unchecked {
             newCounter = ++counters[msg.sender];
@@ -283,11 +314,13 @@ contract Forward {
             revert MissingVault();
         }
 
+        uint256 totalPrice = details.bid.unitPrice * details.fillAmount;
+
         // Fetch the item's royalties
         (, uint256[] memory royaltyAmounts) = ROYALTY_ENGINE.getRoyaltyView(
             address(details.bid.token),
             identifier,
-            details.bid.unitPrice * details.fillAmount
+            totalPrice
         );
 
         // Compute the total royalty amount
@@ -305,7 +338,7 @@ contract Forward {
         WETH.transferFrom(
             details.bid.maker,
             msg.sender,
-            details.bid.unitPrice * details.fillAmount - totalRoyaltyAmount
+            totalPrice - totalRoyaltyAmount
         );
 
         // Lock the royalty in the maker's vault
@@ -337,6 +370,11 @@ contract Forward {
                 totalRoyaltyAmount
             );
         } else {
+            // Ensure ERC1155 bids have a fill amount of at least "1"
+            if (details.fillAmount == 0) {
+                revert InvalidFillAmount();
+            }
+
             // Lock the NFT in the maker's vault
             IERC1155(details.bid.token).safeTransferFrom(
                 msg.sender,
@@ -358,6 +396,7 @@ contract Forward {
         bidStatuses[eip712Hash].filledAmount += details.fillAmount;
 
         emit BidFilled(
+            eip712Hash,
             details.bid.maker,
             msg.sender,
             details.bid.token,
