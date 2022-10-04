@@ -168,58 +168,68 @@ contract Vault {
     }
 
     function unlockERC721(IERC721 token, uint256 identifier) public {
+        // Cache the vault owner for gas-efficiency
+        address vaultOwner = owner;
+
         address tokenOwner = token.ownerOf(identifier);
-        if (tokenOwner == address(this)) {
-            if (msg.sender != owner) {
+        bool itemIsInVault = tokenOwner == address(this);
+        if (itemIsInVault) {
+            if (msg.sender != vaultOwner) {
                 // If the unlock results in losing locked royalties,
                 // then ensure only the owner is authorized to do it
                 revert Unauthorized();
             }
 
-            token.safeTransferFrom(address(this), owner, identifier);
+            // Transfer the token to the vault owner
+            token.safeTransferFrom(address(this), vaultOwner, identifier);
         }
 
-        // Fetch the item's lock
+        // Fetch the item's locked royalty amount
         bytes32 itemHash = keccak256(abi.encode(token, identifier));
         uint256 lockedRoyalty = erc721Locks[itemHash].royalty;
         if (lockedRoyalty > 0) {
-            // Fetch the royalty distribution
-            (
-                address[] memory royaltyRecipients,
-                uint256[] memory royaltyAmounts
-            ) = ROYALTY_ENGINE.getRoyaltyView(
-                    address(token),
-                    identifier,
-                    lockedRoyalty
-                );
+            if (itemIsInVault) {
+                // If the vault is still the owner of the item then we pay the royalties
 
-            uint256 i;
+                // Fetch the royalty distribution
+                (
+                    address[] memory royaltyRecipients,
+                    uint256[] memory royaltyAmounts
+                ) = ROYALTY_ENGINE.getRoyaltyView(
+                        address(token),
+                        identifier,
+                        lockedRoyalty
+                    );
 
-            // Compute the total royalty
-            uint256 totalRoyaltyAmount;
-            uint256 royaltiesLength = royaltyAmounts.length;
-            for (i = 0; i < royaltiesLength; ) {
-                totalRoyaltyAmount += royaltyAmounts[i];
+                uint256 i;
 
-                unchecked {
-                    ++i;
+                // Compute the total royalty amount
+                uint256 totalRoyalty;
+                uint256 royaltiesLength = royaltyAmounts.length;
+                for (i = 0; i < royaltiesLength; ) {
+                    totalRoyalty += royaltyAmounts[i];
+
+                    unchecked {
+                        ++i;
+                    }
                 }
-            }
 
-            for (i = 0; i < royaltiesLength; ) {
-                WETH.safeTransfer(
-                    // If the vault is still the owner of the item then we pay the
-                    // royalties. Otherwise, we assume the item was sold through a
-                    // Seaport listing (enforced to be paying out royalties) so we
-                    // refund the locked royalties to the vault owner.
-                    tokenOwner == address(this) ? royaltyRecipients[i] : owner,
-                    // Split the locked royalties pro-rata
-                    (lockedRoyalty * royaltyAmounts[i]) / totalRoyaltyAmount
-                );
+                for (i = 0; i < royaltiesLength; ) {
+                    WETH.safeTransfer(
+                        royaltyRecipients[i],
+                        // Split the locked royalties pro-rata
+                        (lockedRoyalty * royaltyAmounts[i]) / totalRoyalty
+                    );
 
-                unchecked {
-                    ++i;
+                    unchecked {
+                        ++i;
+                    }
                 }
+            } else {
+                // Otherwise, we assume the item was sold through a Seaport
+                // listing (enforced to be paying out royalties) so we do a
+                // refund to the vault owner
+                WETH.safeTransfer(owner, lockedRoyalty);
             }
 
             // Clear the item's lock
@@ -232,18 +242,22 @@ contract Vault {
         uint256 identifier,
         uint256 amount
     ) public {
+        // Cache the vault owner for gas-efficiency
+        address vaultOwner = owner;
+
+        // Fetch the item's locked royalty details
         bytes32 itemHash = keccak256(abi.encode(token, identifier));
         ERC1155Lock memory lock = erc1155Locks[itemHash];
 
         // Fetch the vault's token balance
-        uint256 tokenBalance = token.balanceOf(address(this), identifier);
+        uint256 vaultBalance = token.balanceOf(address(this), identifier);
 
-        // Assume any locked amount greater than the vault's has been unlocked
-        uint256 unlockedAmount = lock.amount >= tokenBalance
-            ? lock.amount - tokenBalance
+        // Assume any locked amount greater than the vault's balance has been unlocked
+        uint256 unlockedAmount = lock.amount >= vaultBalance
+            ? lock.amount - vaultBalance
             : 0;
 
-        // Determine locked/unlocked amounts
+        // Determine how much of the requested unlock amount is locked vs unlocked
         uint256 amountWithLockedRoyalties;
         uint256 amountWithUnlockedRoyalties;
         if (amount > unlockedAmount) {
@@ -254,83 +268,78 @@ contract Vault {
         }
 
         if (amountWithLockedRoyalties > 0) {
-            if (msg.sender != owner) {
+            if (msg.sender != vaultOwner) {
                 // If the unlock results in losing locked royalties,
                 // then ensure only the owner is authorized to do it
                 revert Unauthorized();
             }
 
+            // Transfer the locked amount to the vault owner
             token.safeTransferFrom(
                 address(this),
-                owner,
+                vaultOwner,
                 identifier,
                 amountWithLockedRoyalties,
                 ""
             );
         }
 
-        if (amount > 0) {
-            // Fetch the item's royalties
+        uint256 totalRoyaltyPayout;
+        if (amountWithUnlockedRoyalties > 0) {
+            // Royalties corresponding to an unlocked amount get refunded to the vault owner
+
+            uint256 payout = (lock.royalty * amountWithUnlockedRoyalties) /
+                lock.amount;
+            totalRoyaltyPayout += payout;
+
+            WETH.safeTransfer(vaultOwner, payout);
+        }
+        if (amountWithLockedRoyalties > 0) {
+            // Royalties corresponding to a locked amount get paid
+
+            // Fetch the royalty distribution
             (
                 address[] memory royaltyRecipients,
                 uint256[] memory royaltyAmounts
             ) = ROYALTY_ENGINE.getRoyaltyView(
                     address(token),
                     identifier,
-                    // The locked royalties are averaged across the number of locked tokens
-                    (lock.royalty * amount) / lock.amount
+                    // The locked royalty is averaged across the amount of locked tokens
+                    (lock.royalty * amountWithLockedRoyalties) / lock.amount
                 );
 
             uint256 i;
 
             // Compute the total royalty amount
-            uint256 totalRoyaltyAmount;
+            uint256 totalRoyalty;
             uint256 royaltiesLength = royaltyAmounts.length;
             for (i = 0; i < royaltiesLength; ) {
-                totalRoyaltyAmount += royaltyAmounts[i];
+                totalRoyalty += royaltyAmounts[i];
 
                 unchecked {
                     ++i;
                 }
             }
 
-            uint256 royaltyPayout;
             for (i = 0; i < royaltiesLength; ) {
-                uint256 payout;
+                uint256 payout = (lock.royalty *
+                    amountWithLockedRoyalties *
+                    royaltyAmounts[i]) /
+                    lock.amount /
+                    totalRoyalty;
+                totalRoyaltyPayout += payout;
 
-                // Royalties corresponding to a locked amount is paid out
-                if (amountWithLockedRoyalties > 0) {
-                    payout =
-                        (lock.royalty *
-                            amountWithLockedRoyalties *
-                            royaltyAmounts[i]) /
-                        amount /
-                        totalRoyaltyAmount;
-                    royaltyPayout += payout;
-
-                    WETH.safeTransfer(royaltyRecipients[i], payout);
-                }
-
-                // Royalties corresponding to an unlocked amount is refunded
-                if (amountWithUnlockedRoyalties > 0) {
-                    payout =
-                        (lock.royalty *
-                            amountWithUnlockedRoyalties *
-                            royaltyAmounts[i]) /
-                        amount /
-                        totalRoyaltyAmount;
-                    royaltyPayout += payout;
-
-                    WETH.safeTransfer(owner, payout);
-                }
+                WETH.safeTransfer(royaltyRecipients[i], payout);
 
                 unchecked {
                     ++i;
                 }
             }
+        }
 
+        if (amount > 0 || totalRoyaltyPayout > 0) {
             // Reduce the item's locked amount
-            erc1155Locks[itemHash].royalty -= royaltyPayout;
+            erc1155Locks[itemHash].royalty -= totalRoyaltyPayout;
             erc1155Locks[itemHash].amount -= amount;
         }
     }

@@ -80,6 +80,7 @@ contract Forward is Ownable {
         uint256 unitPrice,
         uint128 amount
     );
+
     event CounterIncremented(uint256 newCounter, address maker);
 
     // Public constants
@@ -371,7 +372,7 @@ contract Forward is Ownable {
             );
         } else {
             // Ensure ERC1155 bids have a fill amount of at least "1"
-            if (details.fillAmount == 0) {
+            if (details.fillAmount < 1) {
                 revert InvalidFillAmount();
             }
 
