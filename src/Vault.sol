@@ -11,8 +11,6 @@ import {Forward} from "./Forward.sol";
 import {IRoyaltyEngine} from "./interfaces/IRoyaltyEngine.sol";
 import {ISeaport} from "./interfaces/ISeaport.sol";
 
-// TODO: Allow cancelling and/or bulk cancelling
-
 contract Vault {
     using SafeERC20 for IERC20;
 
@@ -342,6 +340,27 @@ contract Vault {
             erc1155Locks[itemHash].royalty -= totalRoyaltyPayout;
             erc1155Locks[itemHash].amount -= amount;
         }
+    }
+
+    function cancel(ISeaport.OrderComponents[] calldata orders)
+        external
+        returns (bool cancelled)
+    {
+        // Only the owner can cancel orders
+        if (msg.sender != owner) {
+            revert Unauthorized();
+        }
+
+        cancelled = SEAPORT.cancel(orders);
+    }
+
+    function incrementCounter() external returns (uint256 newCounter) {
+        // Only the owner can increment the counter
+        if (msg.sender != owner) {
+            revert Unauthorized();
+        }
+
+        newCounter = SEAPORT.incrementCounter();
     }
 
     // ERC1271

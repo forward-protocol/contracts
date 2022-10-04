@@ -91,4 +91,10 @@ interface ISeaport {
         external
         payable
         returns (bool fulfilled);
+
+    function cancel(ISeaport.OrderComponents[] calldata orders)
+        external
+        returns (bool cancelled);
+
+    function incrementCounter() external returns (uint256 newCounter);
 }

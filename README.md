@@ -46,3 +46,4 @@ Ideally the Seaport listing is OpenSea compatible so that it can be exposed to O
 
 - only WETH bids and ETH listings are supported
 - once a listing gets accepted, an additional unlock step is needed for getting the bid royalties unlocked (although this could be hacked via a Seaport consideration tip item, depending on the fill source not all front-ends will automatically include it)
+- for gas-efficiency and simplicity, the amount of an order is a `uint128` (while the ERC1155 standard specifies the quantity of a particular token id as `uint256`)
