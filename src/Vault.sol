@@ -2,7 +2,6 @@
 pragma solidity ^0.8.17;
 
 import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
-import {SafeERC20} from "openzeppelin/token/ERC20/utils/SafeERC20.sol";
 import {IERC721} from "openzeppelin/token/ERC721/IERC721.sol";
 import {IERC1155} from "openzeppelin/token/ERC1155/IERC1155.sol";
 import {ECDSA} from "openzeppelin/utils/cryptography/ECDSA.sol";
@@ -12,8 +11,6 @@ import {IRoyaltyEngine} from "./interfaces/IRoyaltyEngine.sol";
 import {IConduitController, ISeaport} from "./interfaces/ISeaport.sol";
 
 contract Vault {
-    using SafeERC20 for IERC20;
-
     // Structs
 
     struct Payment {
@@ -218,7 +215,7 @@ contract Vault {
                 }
 
                 for (i = 0; i < royaltiesLength; ) {
-                    WETH.safeTransfer(
+                    WETH.transfer(
                         royaltyRecipients[i],
                         // Split the locked royalties pro-rata
                         (lockedRoyalty * royaltyAmounts[i]) / totalRoyalty
@@ -232,7 +229,7 @@ contract Vault {
                 // Otherwise, we assume the item was sold through a Seaport
                 // listing (enforced to be paying out royalties) so we do a
                 // refund to the vault owner
-                WETH.safeTransfer(owner, lockedRoyalty);
+                WETH.transfer(owner, lockedRoyalty);
             }
 
             // Clear the item's lock
@@ -295,7 +292,7 @@ contract Vault {
                 lock.amount;
             totalRoyaltyPayout += payout;
 
-            WETH.safeTransfer(vaultOwner, payout);
+            WETH.transfer(vaultOwner, payout);
         }
         if (amountWithLockedRoyalties > 0) {
             // Royalties corresponding to a locked amount get paid
@@ -332,7 +329,7 @@ contract Vault {
                     totalRoyalty;
                 totalRoyaltyPayout += payout;
 
-                WETH.safeTransfer(royaltyRecipients[i], payout);
+                WETH.transfer(royaltyRecipients[i], payout);
 
                 unchecked {
                     ++i;
