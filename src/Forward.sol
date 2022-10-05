@@ -250,13 +250,15 @@ contract Forward is Ownable {
     function cancel(Bid[] calldata bids) external {
         uint256 length = bids.length;
         for (uint256 i = 0; i < length; ) {
+            Bid memory bid = bids[i];
+
             // Only the bid's maker can cancel
-            if (bids[i].maker != msg.sender) {
+            if (bid.maker != msg.sender) {
                 revert Unauthorized();
             }
 
             // Mark the bid as cancelled
-            bytes32 bidHash = getBidHash(bids[i]);
+            bytes32 bidHash = getBidHash(bid);
             bidStatuses[bidHash].cancelled = true;
 
             unchecked {
