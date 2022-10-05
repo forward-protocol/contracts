@@ -301,6 +301,7 @@ contract Forward is Ownable {
 
     function _fill(FillDetails memory details, uint256 identifier) internal {
         Bid memory bid = details.bid;
+        uint128 fillAmount = details.fillAmount;
 
         // Ensure the bid is not expired
         if (bid.expiration <= block.timestamp) {
@@ -321,7 +322,7 @@ contract Forward is Ownable {
             revert CancelledBid();
         }
         // Ensure the amount to fill is available
-        if (bid.amount - bidStatus.filledAmount < details.fillAmount) {
+        if (bid.amount - bidStatus.filledAmount < fillAmount) {
             revert InsufficientAmountAvailable();
         }
 
@@ -331,7 +332,7 @@ contract Forward is Ownable {
             revert MissingVault();
         }
 
-        uint256 totalPrice = bid.unitPrice * details.fillAmount;
+        uint256 totalPrice = bid.unitPrice * fillAmount;
 
         // Fetch the item's royalties
         (, uint256[] memory royaltyAmounts) = royaltyEngine.getRoyaltyView(
@@ -366,7 +367,7 @@ contract Forward is Ownable {
             bid.itemKind == ItemKind.ERC721_WITH_CRITERIA
         ) {
             // Ensure ERC721 bids have a fill amount of "1"
-            if (details.fillAmount != 1) {
+            if (fillAmount != 1) {
                 revert InvalidFillAmount();
             }
 
@@ -384,7 +385,7 @@ contract Forward is Ownable {
             );
         } else {
             // Ensure ERC1155 bids have a fill amount of at least "1"
-            if (details.fillAmount < 1) {
+            if (fillAmount < 1) {
                 revert InvalidFillAmount();
             }
 
@@ -393,20 +394,20 @@ contract Forward is Ownable {
                 msg.sender,
                 address(vault),
                 identifier,
-                details.fillAmount,
+                fillAmount,
                 ""
             );
 
             vault.lockERC1155(
                 IERC1155(bid.token),
                 identifier,
-                details.fillAmount,
+                fillAmount,
                 totalRoyaltyAmount
             );
         }
 
         // Update the bid's filled amount
-        bidStatuses[eip712Hash].filledAmount += details.fillAmount;
+        bidStatuses[eip712Hash].filledAmount += fillAmount;
 
         emit BidFilled(
             eip712Hash,
@@ -415,7 +416,7 @@ contract Forward is Ownable {
             bid.token,
             identifier,
             bid.unitPrice,
-            details.fillAmount
+            fillAmount
         );
     }
 
