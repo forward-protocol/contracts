@@ -82,7 +82,7 @@ contract Forward is Ownable {
         uint128 amount
     );
 
-    event CounterIncremented(uint256 newCounter, address maker);
+    event CounterIncremented(address maker, uint256 newCounter);
 
     // Public constants
 
@@ -276,7 +276,7 @@ contract Forward is Ownable {
             newCounter = ++counters[msg.sender];
         }
 
-        emit CounterIncremented(newCounter, msg.sender);
+        emit CounterIncremented(msg.sender, newCounter);
     }
 
     function getBidHash(Bid memory bid) public view returns (bytes32 bidHash) {
