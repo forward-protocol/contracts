@@ -4,7 +4,6 @@ pragma solidity ^0.8.17;
 import {Ownable} from "openzeppelin/access/Ownable.sol";
 import {Clones} from "openzeppelin/proxy/Clones.sol";
 import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
-import {SafeERC20} from "openzeppelin/token/ERC20/utils/SafeERC20.sol";
 import {IERC721} from "openzeppelin/token/ERC721/IERC721.sol";
 import {IERC1155} from "openzeppelin/token/ERC1155/IERC1155.sol";
 import {ECDSA} from "openzeppelin/utils/cryptography/ECDSA.sol";
@@ -14,7 +13,6 @@ import {IRoyaltyEngine} from "./interfaces/IRoyaltyEngine.sol";
 
 contract Forward is Ownable {
     using Clones for address;
-    using SafeERC20 for IERC20;
 
     // Structs and enums
 
@@ -304,6 +302,7 @@ contract Forward is Ownable {
         Bid memory bid = details.bid;
 
         address maker = bid.maker;
+        address token = bid.token;
         uint128 fillAmount = details.fillAmount;
 
         // Ensure the bid is not expired
@@ -339,7 +338,7 @@ contract Forward is Ownable {
 
         // Fetch the item's royalties
         (, uint256[] memory royaltyAmounts) = royaltyEngine.getRoyaltyView(
-            address(bid.token),
+            token,
             identifier,
             totalPrice
         );
@@ -371,17 +370,13 @@ contract Forward is Ownable {
             }
 
             // Lock the NFT in the maker's vault
-            IERC721(bid.token).safeTransferFrom(
+            IERC721(token).safeTransferFrom(
                 msg.sender,
                 address(vault),
                 identifier
             );
 
-            vault.lockERC721(
-                IERC721(bid.token),
-                identifier,
-                totalRoyaltyAmount
-            );
+            vault.lockERC721(IERC721(token), identifier, totalRoyaltyAmount);
         } else {
             // Ensure ERC1155 bids have a fill amount of at least "1"
             if (fillAmount < 1) {
@@ -389,7 +384,7 @@ contract Forward is Ownable {
             }
 
             // Lock the NFT in the maker's vault
-            IERC1155(bid.token).safeTransferFrom(
+            IERC1155(token).safeTransferFrom(
                 msg.sender,
                 address(vault),
                 identifier,
@@ -398,7 +393,7 @@ contract Forward is Ownable {
             );
 
             vault.lockERC1155(
-                IERC1155(bid.token),
+                IERC1155(token),
                 identifier,
                 fillAmount,
                 totalRoyaltyAmount
@@ -412,7 +407,7 @@ contract Forward is Ownable {
             eip712Hash,
             maker,
             msg.sender,
-            bid.token,
+            token,
             identifier,
             bid.unitPrice,
             fillAmount
