@@ -297,6 +297,10 @@ contract Vault {
         if (amountWithLockedRoyalties > 0) {
             // Royalties corresponding to a locked amount get paid
 
+            // The locked royalty is averaged across the amount of locked tokens
+            uint256 averageRoyalty = (lock.royalty *
+                amountWithLockedRoyalties) / lock.amount;
+
             // Fetch the royalty distribution
             (
                 address[] memory royaltyRecipients,
@@ -304,8 +308,7 @@ contract Vault {
             ) = forward.royaltyEngine().getRoyaltyView(
                     address(token),
                     identifier,
-                    // The locked royalty is averaged across the amount of locked tokens
-                    (lock.royalty * amountWithLockedRoyalties) / lock.amount
+                    averageRoyalty
                 );
 
             uint256 i;
@@ -322,10 +325,7 @@ contract Vault {
             }
 
             for (i = 0; i < royaltiesLength; ) {
-                uint256 payout = (lock.royalty *
-                    amountWithLockedRoyalties *
-                    royaltyAmounts[i]) /
-                    lock.amount /
+                uint256 payout = (averageRoyalty * royaltyAmounts[i]) /
                     totalRoyalty;
                 totalRoyaltyPayout += payout;
 
