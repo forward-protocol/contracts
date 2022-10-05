@@ -427,7 +427,9 @@ contract Vault {
             );
         {
             for (uint256 i = 0; i < paymentsLength; ) {
-                uint256 amount = payments[i].amount;
+                Payment memory payment = payments[i];
+
+                uint256 amount = payment.amount;
                 totalPrice += amount;
 
                 consideration[i] = ISeaport.ConsiderationItem({
@@ -436,7 +438,7 @@ contract Vault {
                     identifierOrCriteria: 0,
                     startAmount: amount,
                     endAmount: amount,
-                    recipient: payments[i].recipient
+                    recipient: payment.recipient
                 });
 
                 unchecked {
