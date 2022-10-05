@@ -55,6 +55,9 @@ contract ERC1155Test is Test {
 
     IWETH internal WETH;
 
+    bytes32 internal constant SEAPORT_OPENSEA_CONDUIT_KEY =
+        0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000;
+
     // Setup wallets
     uint256 internal alicePk = uint256(0x01);
     address internal alice = vm.addr(alicePk);
@@ -122,7 +125,7 @@ contract ERC1155Test is Test {
 
         // Setup vault together with balances/approvals
         vm.startPrank(maker);
-        vault = forward.createVault();
+        vault = forward.createVault(SEAPORT_OPENSEA_CONDUIT_KEY);
         WETH.deposit{value: unitPrice * amount}();
         WETH.approve(address(forward), unitPrice * amount);
         vm.stopPrank();
@@ -189,7 +192,7 @@ contract ERC1155Test is Test {
         parameters.endTime = block.timestamp + 1;
         // parameters.zoneHash = bytes32(0);
         // parameters.salt = 0;
-        parameters.conduitKey = vault.SEAPORT_OPENSEA_CONDUIT_KEY();
+        parameters.conduitKey = SEAPORT_OPENSEA_CONDUIT_KEY;
         parameters.totalOriginalConsiderationItems = 1 + royaltiesCount;
 
         // Populate the listing' offer items

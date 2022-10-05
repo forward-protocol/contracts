@@ -74,7 +74,7 @@ interface ISeaport {
         returns (
             string memory version,
             bytes32 domainSeparator,
-            address conduitController
+            IConduitController conduitController
         );
 
     function getCounter(address offerer)
@@ -97,4 +97,11 @@ interface ISeaport {
         returns (bool cancelled);
 
     function incrementCounter() external returns (uint256 newCounter);
+}
+
+interface IConduitController {
+    function getConduit(bytes32 conduitKey)
+        external
+        view
+        returns (address conduit, bool exists);
 }

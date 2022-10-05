@@ -9,7 +9,7 @@ import {ECDSA} from "openzeppelin/utils/cryptography/ECDSA.sol";
 
 import {Forward} from "./Forward.sol";
 import {IRoyaltyEngine} from "./interfaces/IRoyaltyEngine.sol";
-import {ISeaport} from "./interfaces/ISeaport.sol";
+import {IConduitController, ISeaport} from "./interfaces/ISeaport.sol";
 
 contract Vault {
     using SafeERC20 for IERC20;
@@ -44,6 +44,7 @@ contract Vault {
     // Errors
 
     error AlreadyInitialized();
+    error InexistentSeaportConduit();
 
     error InvalidListing();
 
@@ -58,23 +59,19 @@ contract Vault {
     ISeaport public constant SEAPORT =
         ISeaport(0x00000000006c3852cbEf3e08E8dF289169EdE581);
 
-    // TODO: Retrieve this from the core `Forward` contract (in order to be able to override)
-    IRoyaltyEngine public constant ROYALTY_ENGINE =
-        IRoyaltyEngine(0x0385603ab55642cb4Dd5De3aE9e306809991804f);
+    IConduitController public constant SEAPORT_CONDUIT_CONTROLLER =
+        IConduitController(0x00000000F9490004C11Cef243f5400493c00Ad63);
 
-    // TODO: Allow the owner to dynamically change these
-    bytes32 public constant SEAPORT_OPENSEA_CONDUIT_KEY =
-        0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000;
-    address public constant SEAPORT_OPENSEA_CONDUIT =
-        0x1E0049783F008A0085193E00003D00cd54003c71;
-
-    // TODO: Pre-compute and store as constant
-    bytes32 public SEAPORT_DOMAIN_SEPARATOR;
+    bytes32 public constant SEAPORT_DOMAIN_SEPARATOR =
+        0xb50c8913581289bd2e066aeef89fceb9615d490d673131fd1a7047436706834e;
 
     // Public fields
 
     Forward public forward;
     address public owner;
+
+    bytes32 public seaportConduitKey;
+    address public seaportConduit;
 
     // Private fields
 
@@ -83,7 +80,11 @@ contract Vault {
 
     // Constructor
 
-    function initialize(address _forward, address _owner) public {
+    function initialize(
+        address _forward,
+        address _owner,
+        bytes32 _seaportConduitKey
+    ) public {
         if (address(forward) != address(0)) {
             revert AlreadyInitialized();
         }
@@ -91,8 +92,16 @@ contract Vault {
         forward = Forward(_forward);
         owner = _owner;
 
-        // Cache the Seaport EIP712 domain separator
-        (, SEAPORT_DOMAIN_SEPARATOR, ) = SEAPORT.information();
+        // Initialize the conduit
+        (address conduit, bool exists) = SEAPORT_CONDUIT_CONTROLLER.getConduit(
+            _seaportConduitKey
+        );
+        if (!exists) {
+            revert InexistentSeaportConduit();
+        }
+
+        seaportConduitKey = _seaportConduitKey;
+        seaportConduit = conduit;
     }
 
     // Receive fallback
@@ -128,12 +137,10 @@ contract Vault {
         erc721Locks[itemHash].royalty = royalty;
 
         // Approve the conduit for listing
-        bool isApproved = token.isApprovedForAll(
-            address(this),
-            SEAPORT_OPENSEA_CONDUIT
-        );
+        address conduit = seaportConduit;
+        bool isApproved = token.isApprovedForAll(address(this), conduit);
         if (!isApproved) {
-            token.setApprovalForAll(SEAPORT_OPENSEA_CONDUIT, true);
+            token.setApprovalForAll(conduit, true);
         }
     }
 
@@ -156,12 +163,10 @@ contract Vault {
         erc1155Locks[itemHash].amount += amount;
 
         // Approve the conduit for listing
-        bool isApproved = token.isApprovedForAll(
-            address(this),
-            SEAPORT_OPENSEA_CONDUIT
-        );
+        address conduit = seaportConduit;
+        bool isApproved = token.isApprovedForAll(address(this), conduit);
         if (!isApproved) {
-            token.setApprovalForAll(SEAPORT_OPENSEA_CONDUIT, true);
+            token.setApprovalForAll(conduit, true);
         }
     }
 
@@ -193,7 +198,7 @@ contract Vault {
                 (
                     address[] memory royaltyRecipients,
                     uint256[] memory royaltyAmounts
-                ) = ROYALTY_ENGINE.getRoyaltyView(
+                ) = forward.royaltyEngine().getRoyaltyView(
                         address(token),
                         identifier,
                         lockedRoyalty
@@ -299,7 +304,7 @@ contract Vault {
             (
                 address[] memory royaltyRecipients,
                 uint256[] memory royaltyAmounts
-            ) = ROYALTY_ENGINE.getRoyaltyView(
+            ) = forward.royaltyEngine().getRoyaltyView(
                     address(token),
                     identifier,
                     // The locked royalty is averaged across the amount of locked tokens
@@ -361,6 +366,23 @@ contract Vault {
         }
 
         newCounter = SEAPORT.incrementCounter();
+    }
+
+    function updateSeaportConduitKey(bytes32 newSeaportConduitKey) external {
+        // Only the owner can update the Seaport conduit key
+        if (msg.sender != owner) {
+            revert Unauthorized();
+        }
+
+        (address conduit, bool exists) = SEAPORT_CONDUIT_CONTROLLER.getConduit(
+            newSeaportConduitKey
+        );
+        if (!exists) {
+            revert InexistentSeaportConduit();
+        }
+
+        seaportConduitKey = newSeaportConduitKey;
+        seaportConduit = conduit;
     }
 
     // ERC1271
@@ -446,7 +468,7 @@ contract Vault {
             (
                 address[] memory royaltyRecipients,
                 uint256[] memory royaltyAmounts
-            ) = ROYALTY_ENGINE.getRoyaltyView(
+            ) = forward.royaltyEngine().getRoyaltyView(
                     listingDetails.token,
                     listingDetails.identifier,
                     totalPrice
@@ -492,7 +514,7 @@ contract Vault {
             order.endTime = listingDetails.endTime;
             // order.zoneHash = bytes32(0);
             order.salt = listingDetails.salt;
-            order.conduitKey = SEAPORT_OPENSEA_CONDUIT_KEY;
+            order.conduitKey = seaportConduitKey;
             order.counter = SEAPORT.getCounter(address(this));
 
             orderHash = SEAPORT.getOrderHash(order);

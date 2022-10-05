@@ -69,6 +69,7 @@ contract Forward is Ownable {
     event VaultCreated(address owner, address vault);
 
     event MinDiffBpsUpdated(uint256 newMinDiffBps);
+    event RoyaltyEngineUpdated(address newRoyaltyEngine);
 
     event BidCancelled(bytes32 bidHash);
     event BidFilled(
@@ -88,24 +89,22 @@ contract Forward is Ownable {
     IERC20 public constant WETH =
         IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
 
-    IRoyaltyEngine public constant ROYALTY_ENGINE =
-        IRoyaltyEngine(0x0385603ab55642cb4Dd5De3aE9e306809991804f);
-
     bytes32 public immutable DOMAIN_SEPARATOR;
     bytes32 public immutable BID_TYPEHASH;
 
-    // Private constants
+    // Public fields
 
     // Implementation contract for EIP1167 user vault proxies
-    Vault private immutable vaultImplementation;
-
-    // Public fields
+    Vault public immutable vaultImplementation;
 
     // The royalties of all listings from the user vaults must be
     // within `minDiffBps` of the bid royalties, otherwise it can
     // be possible to evade paying the royalties by using private
     // listings with a zero (or very low) price.
-    uint256 public minDiffBps;
+    uint16 public minDiffBps;
+
+    // The royalty engine compatible contract used for royalty lookups
+    IRoyaltyEngine public royaltyEngine;
 
     mapping(bytes32 => BidStatus) public bidStatuses;
     mapping(address => uint256) public counters;
@@ -114,11 +113,16 @@ contract Forward is Ownable {
     // Constructor
 
     constructor() {
+        // Deploy the implementation contract all vault proxies will point to
+        vaultImplementation = new Vault();
+
         // Initially set to 50%
         minDiffBps = 5000;
 
-        // Deploy the implementation contract all vault proxies will point to
-        vaultImplementation = new Vault();
+        // Use the default royalty engine
+        royaltyEngine = IRoyaltyEngine(
+            0x0385603ab55642cb4Dd5De3aE9e306809991804f
+        );
 
         uint256 chainId;
         assembly {
@@ -163,7 +167,12 @@ contract Forward is Ownable {
 
     // Restricted methods
 
-    function updateMinDiffBps(uint256 newMinDiffBps) external onlyOwner {
+    function updateRoyaltyEngine(address newRoyaltyEngine) external onlyOwner {
+        royaltyEngine = IRoyaltyEngine(newRoyaltyEngine);
+        emit RoyaltyEngineUpdated(newRoyaltyEngine);
+    }
+
+    function updateMinDiffBps(uint8 newMinDiffBps) external onlyOwner {
         // Ensure the new value is a valid bps
         if (newMinDiffBps > 10000) {
             revert InvalidMinDiffBps();
@@ -175,7 +184,10 @@ contract Forward is Ownable {
 
     // Public methods
 
-    function createVault() external returns (Vault vault) {
+    function createVault(bytes32 seaportConduitKey)
+        external
+        returns (Vault vault)
+    {
         // Ensure the sender has no vault
         vault = vaults[msg.sender];
         if (address(vault) != address(0)) {
@@ -190,7 +202,7 @@ contract Forward is Ownable {
                 )
             )
         );
-        vault.initialize(address(this), msg.sender);
+        vault.initialize(address(this), msg.sender, seaportConduitKey);
 
         // Associate the vault to the sender
         vaults[msg.sender] = vault;
@@ -318,7 +330,7 @@ contract Forward is Ownable {
         uint256 totalPrice = details.bid.unitPrice * details.fillAmount;
 
         // Fetch the item's royalties
-        (, uint256[] memory royaltyAmounts) = ROYALTY_ENGINE.getRoyaltyView(
+        (, uint256[] memory royaltyAmounts) = royaltyEngine.getRoyaltyView(
             address(details.bid.token),
             identifier,
             totalPrice
