@@ -300,16 +300,18 @@ contract Forward is Ownable {
     // Internal methods
 
     function _fill(FillDetails memory details, uint256 identifier) internal {
+        Bid memory bid = details.bid;
+
         // Ensure the bid is not expired
-        if (details.bid.expiration <= block.timestamp) {
+        if (bid.expiration <= block.timestamp) {
             revert ExpiredBid();
         }
 
         // Ensure the maker's signature is valid
-        bytes32 eip712Hash = _getEIP712Hash(getBidHash(details.bid));
+        bytes32 eip712Hash = _getEIP712Hash(getBidHash(bid));
         // TODO: Add support for EIP2098 and EIP1271 signatures
         address signer = ECDSA.recover(eip712Hash, details.signature);
-        if (signer != details.bid.maker) {
+        if (signer != bid.maker) {
             revert InvalidSignature();
         }
 
@@ -319,21 +321,21 @@ contract Forward is Ownable {
             revert CancelledBid();
         }
         // Ensure the amount to fill is available
-        if (details.bid.amount - bidStatus.filledAmount < details.fillAmount) {
+        if (bid.amount - bidStatus.filledAmount < details.fillAmount) {
             revert InsufficientAmountAvailable();
         }
 
         // Ensure the maker has initialized a vault
-        Vault vault = vaults[details.bid.maker];
+        Vault vault = vaults[bid.maker];
         if (address(vault) == address(0)) {
             revert MissingVault();
         }
 
-        uint256 totalPrice = details.bid.unitPrice * details.fillAmount;
+        uint256 totalPrice = bid.unitPrice * details.fillAmount;
 
         // Fetch the item's royalties
         (, uint256[] memory royaltyAmounts) = royaltyEngine.getRoyaltyView(
-            address(details.bid.token),
+            address(bid.token),
             identifier,
             totalPrice
         );
@@ -351,21 +353,17 @@ contract Forward is Ownable {
 
         // Send the payment to the taker
         WETH.transferFrom(
-            details.bid.maker,
+            bid.maker,
             msg.sender,
             totalPrice - totalRoyaltyAmount
         );
 
         // Lock the royalty in the maker's vault
-        WETH.transferFrom(
-            details.bid.maker,
-            address(vault),
-            totalRoyaltyAmount
-        );
+        WETH.transferFrom(bid.maker, address(vault), totalRoyaltyAmount);
 
         if (
-            details.bid.itemKind == ItemKind.ERC721 ||
-            details.bid.itemKind == ItemKind.ERC721_WITH_CRITERIA
+            bid.itemKind == ItemKind.ERC721 ||
+            bid.itemKind == ItemKind.ERC721_WITH_CRITERIA
         ) {
             // Ensure ERC721 bids have a fill amount of "1"
             if (details.fillAmount != 1) {
@@ -373,14 +371,14 @@ contract Forward is Ownable {
             }
 
             // Lock the NFT in the maker's vault
-            IERC721(details.bid.token).safeTransferFrom(
+            IERC721(bid.token).safeTransferFrom(
                 msg.sender,
                 address(vault),
                 identifier
             );
 
             vault.lockERC721(
-                IERC721(details.bid.token),
+                IERC721(bid.token),
                 identifier,
                 totalRoyaltyAmount
             );
@@ -391,7 +389,7 @@ contract Forward is Ownable {
             }
 
             // Lock the NFT in the maker's vault
-            IERC1155(details.bid.token).safeTransferFrom(
+            IERC1155(bid.token).safeTransferFrom(
                 msg.sender,
                 address(vault),
                 identifier,
@@ -400,7 +398,7 @@ contract Forward is Ownable {
             );
 
             vault.lockERC1155(
-                IERC1155(details.bid.token),
+                IERC1155(bid.token),
                 identifier,
                 details.fillAmount,
                 totalRoyaltyAmount
@@ -412,11 +410,11 @@ contract Forward is Ownable {
 
         emit BidFilled(
             eip712Hash,
-            details.bid.maker,
+            bid.maker,
             msg.sender,
-            details.bid.token,
+            bid.token,
             identifier,
-            details.bid.unitPrice,
+            bid.unitPrice,
             details.fillAmount
         );
     }
