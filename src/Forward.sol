@@ -300,7 +300,10 @@ contract Forward is Ownable {
     // Internal methods
 
     function _fill(FillDetails memory details, uint256 identifier) internal {
+        // Cache some data for gas-efficiency
         Bid memory bid = details.bid;
+
+        address maker = bid.maker;
         uint128 fillAmount = details.fillAmount;
 
         // Ensure the bid is not expired
@@ -312,7 +315,7 @@ contract Forward is Ownable {
         bytes32 eip712Hash = _getEIP712Hash(getBidHash(bid));
         // TODO: Add support for EIP2098 and EIP1271 signatures
         address signer = ECDSA.recover(eip712Hash, details.signature);
-        if (signer != bid.maker) {
+        if (signer != maker) {
             revert InvalidSignature();
         }
 
@@ -327,7 +330,7 @@ contract Forward is Ownable {
         }
 
         // Ensure the maker has initialized a vault
-        Vault vault = vaults[bid.maker];
+        Vault vault = vaults[maker];
         if (address(vault) == address(0)) {
             revert MissingVault();
         }
@@ -353,14 +356,10 @@ contract Forward is Ownable {
         }
 
         // Send the payment to the taker
-        WETH.transferFrom(
-            bid.maker,
-            msg.sender,
-            totalPrice - totalRoyaltyAmount
-        );
+        WETH.transferFrom(maker, msg.sender, totalPrice - totalRoyaltyAmount);
 
         // Lock the royalty in the maker's vault
-        WETH.transferFrom(bid.maker, address(vault), totalRoyaltyAmount);
+        WETH.transferFrom(maker, address(vault), totalRoyaltyAmount);
 
         if (
             bid.itemKind == ItemKind.ERC721 ||
@@ -411,7 +410,7 @@ contract Forward is Ownable {
 
         emit BidFilled(
             eip712Hash,
-            bid.maker,
+            maker,
             msg.sender,
             bid.token,
             identifier,
