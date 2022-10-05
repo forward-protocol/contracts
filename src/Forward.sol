@@ -101,7 +101,7 @@ contract Forward is Ownable {
     // within `minDiffBps` of the bid royalties, otherwise it can
     // be possible to evade paying the royalties by using private
     // listings with a zero (or very low) price.
-    uint16 public minDiffBps;
+    uint256 public minDiffBps;
 
     // The royalty engine compatible contract used for royalty lookups
     IRoyaltyEngine public royaltyEngine;
@@ -172,7 +172,7 @@ contract Forward is Ownable {
         emit RoyaltyEngineUpdated(newRoyaltyEngine);
     }
 
-    function updateMinDiffBps(uint8 newMinDiffBps) external onlyOwner {
+    function updateMinDiffBps(uint256 newMinDiffBps) external onlyOwner {
         // Ensure the new value is a valid bps
         if (newMinDiffBps > 10000) {
             revert InvalidMinDiffBps();
