@@ -84,7 +84,7 @@ contract Forward is Ownable {
     // Public constants
 
     IERC20 public constant WETH =
-        IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+        IERC20(0xB4FBF271143F4FBf7B91A5ded31805e42b2208d6);
 
     bytes32 public immutable DOMAIN_SEPARATOR;
     bytes32 public immutable BID_TYPEHASH;
@@ -118,7 +118,7 @@ contract Forward is Ownable {
 
         // Use the default royalty engine
         royaltyEngine = IRoyaltyEngine(
-            0x0385603ab55642cb4Dd5De3aE9e306809991804f
+            0xe7c9Cb6D966f76f3B5142167088927Bf34966a1f
         );
 
         uint256 chainId;

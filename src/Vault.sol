@@ -51,7 +51,7 @@ contract Vault {
     // Public constants
 
     IERC20 public constant WETH =
-        IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+        IERC20(0xB4FBF271143F4FBf7B91A5ded31805e42b2208d6);
 
     ISeaport public constant SEAPORT =
         ISeaport(0x00000000006c3852cbEf3e08E8dF289169EdE581);
@@ -60,7 +60,7 @@ contract Vault {
         IConduitController(0x00000000F9490004C11Cef243f5400493c00Ad63);
 
     bytes32 public constant SEAPORT_DOMAIN_SEPARATOR =
-        0xb50c8913581289bd2e066aeef89fceb9615d490d673131fd1a7047436706834e;
+        0x712fdde1f147adcbb0fabb1aeb9c2d317530a46d266db095bc40c606fe94f0c2;
 
     // Public fields
 
