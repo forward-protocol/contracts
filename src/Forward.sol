@@ -2,18 +2,16 @@
 pragma solidity ^0.8.17;
 
 import {Ownable} from "openzeppelin/access/Ownable.sol";
-import {Clones} from "openzeppelin/proxy/Clones.sol";
 import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
 import {IERC721} from "openzeppelin/token/ERC721/IERC721.sol";
 import {IERC1155} from "openzeppelin/token/ERC1155/IERC1155.sol";
 
-import {Vault} from "./Vault.sol";
+import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
 import {IRoyaltyEngine} from "./interfaces/IRoyaltyEngine.sol";
+import {IConduitController, ISeaport} from "./interfaces/ISeaport.sol";
 
 contract Forward is Ownable {
-    using Clones for address;
-
-    // Structs and enums
+    // Enums
 
     enum ItemKind {
         ERC721,
@@ -22,60 +20,88 @@ contract Forward is Ownable {
         ERC1155_WITH_CRITERIA
     }
 
-    struct Bid {
+    enum OrderKind {
+        BID,
+        LISTING
+    }
+
+    // Structs
+
+    struct Order {
+        OrderKind orderKind;
         ItemKind itemKind;
         address maker;
         address token;
         uint256 identifierOrCriteria;
         uint256 unitPrice;
         uint128 amount;
-        uint128 salt;
+        uint256 salt;
         uint256 expiration;
     }
 
-    struct BidStatus {
-        bool cancelled;
-        uint128 filledAmount;
-    }
-
     struct FillDetails {
-        Bid bid;
+        Order order;
         bytes signature;
         uint128 fillAmount;
     }
 
+    struct OrderStatus {
+        bool cancelled;
+        uint128 filledAmount;
+    }
+
+    struct Payment {
+        uint256 amount;
+        address recipient;
+    }
+
+    struct SeaportListingDetails {
+        address maker;
+        ISeaport.ItemType itemType;
+        address token;
+        uint256 identifier;
+        uint256 amount;
+        uint256 startTime;
+        uint256 endTime;
+        uint256 salt;
+        Payment[] payments;
+    }
+
     // Errors
 
-    error CancelledBid();
-    error ExpiredBid();
-    error InvalidBid();
+    error InvalidSeaportConduit();
+
+    error OrderIsCancelled();
+    error OrderIsExpired();
+    error OrderIsInvalid();
+
+    error SeaportListingIsInvalid();
+    error SeaportListingIsNotFillable();
+    error SeaportListingIsUnderpriced();
 
     error InsufficientAmountAvailable();
     error InvalidCriteriaProof();
     error InvalidFillAmount();
     error InvalidMinDiffBps();
     error InvalidSignature();
-
-    error ExistingVault();
-    error MissingVault();
+    error PaymentFailed();
 
     error Unauthorized();
 
     // Events
 
-    event VaultCreated(address owner, address vault);
-
-    event MinDiffBpsUpdated(uint256 newMinDiffBps);
     event RoyaltyEngineUpdated(address newRoyaltyEngine);
+    event SeaportConduitUpdated(address newSeaportConduitKey);
 
-    event BidCancelled(bytes32 bidHash);
-    event BidFilled(
-        bytes32 bidHash,
+    event OrderCancelled(bytes32 bidHash);
+    event OrderFilled(
+        bytes32 orderHash,
+        OrderKind orderKind,
         address maker,
         address taker,
         address token,
         uint256 identifier,
-        uint256 unitPrice,
+        uint96 unitPrice,
         uint128 amount
     );
 
@@ -84,42 +110,50 @@ contract Forward is Ownable {
     // Public constants
 
     IERC20 public constant WETH =
-        IERC20(0xB4FBF271143F4FBf7B91A5ded31805e42b2208d6);
+        IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+
+    ISeaport public constant SEAPORT =
+        ISeaport(0x00000000006c3852cbEf3e08E8dF289169EdE581);
+
+    IConduitController public constant CONDUIT_CONTROLLER =
+        IConduitController(0x00000000F9490004C11Cef243f5400493c00Ad63);
+
+    bytes32 public constant SEAPORT_DOMAIN_SEPARATOR =
+        0x712fdde1f147adcbb0fabb1aeb9c2d317530a46d266db095bc40c606fe94f0c2;
 
     bytes32 public immutable DOMAIN_SEPARATOR;
-    bytes32 public immutable BID_TYPEHASH;
+    bytes32 public immutable ORDER_TYPEHASH;
 
     // Public fields
 
-    // Implementation contract for EIP1167 user vault proxies
-    Vault public immutable vaultImplementation;
-
-    // The royalties of all listings from the user vaults must be
-    // within `minDiffBps` of the bid royalties, otherwise it can
-    // be possible to evade paying the royalties by using private
-    // listings with a zero (or very low) price.
-    uint256 public minDiffBps;
-
-    // The royalty engine compatible contract used for royalty lookups
+    // Royalty engine compatible contract used for royalty lookups
     IRoyaltyEngine public royaltyEngine;
 
-    mapping(bytes32 => BidStatus) public bidStatuses;
+    // Conduit used for Seaport listings (changeable by owner)
+    bytes32 public seaportConduitKey;
+    address public seaportConduit;
+
+    // Mapping from order hash to order status (eg. cancelled and amount filled)
+    mapping(bytes32 => OrderStatus) public orderStatuses;
+    // Mapping from wallet to current counter
     mapping(address => uint256) public counters;
-    mapping(address => Vault) public vaults;
+
+    // `keccak256(abi.encode(token, identifier)) => owner`
+    mapping(bytes32 => address) public erc721Owners;
+    // `keccak256(abi.encode(token, identifier, owner)) => amount`
+    mapping(bytes32 => uint256) public erc1155Amounts;
 
     // Constructor
 
     constructor() {
-        // Deploy the implementation contract all vault proxies will point to
-        vaultImplementation = new Vault();
-
-        // Initially set to 50%
-        minDiffBps = 5000;
-
         // Use the default royalty engine
         royaltyEngine = IRoyaltyEngine(
             0xe7c9Cb6D966f76f3B5142167088927Bf34966a1f
         );
+
+        // Use OpenSea's default conduit (so that Seaport listings are available on OpenSea)
+        seaportConduitKey = 0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000;
+        seaportConduit = 0x1E0049783F008A0085193E00003D00cd54003c71;
 
         uint256 chainId;
         assembly {
@@ -145,14 +179,15 @@ contract Forward is Ownable {
         );
 
         // TODO: Pre-compute and store as a constant
-        BID_TYPEHASH = keccak256(
+        ORDER_TYPEHASH = keccak256(
             abi.encodePacked(
-                "Bid(",
+                "Order(",
+                "uint8 orderKind,",
                 "uint8 itemKind,",
                 "address maker,",
                 "address token,",
                 "uint256 identifierOrCriteria,",
-                "uint256 unitPrice,",
+                "uint96 unitPrice,",
                 "uint128 amount,",
                 "uint128 salt,",
                 "uint256 expiration,",
@@ -169,94 +204,83 @@ contract Forward is Ownable {
         emit RoyaltyEngineUpdated(newRoyaltyEngine);
     }
 
-    function updateMinDiffBps(uint256 newMinDiffBps) external onlyOwner {
-        // Ensure the new value is a valid bps
-        if (newMinDiffBps > 10000) {
-            revert InvalidMinDiffBps();
+    function updateSeaportConduit(address newSeaportConduitKey)
+        external
+        onlyOwner
+    {
+        (address newSeaportConduit, bool exists) = CONDUIT_CONTROLLER
+            .getConduit(newSeaportConduitKey);
+        if (!exists) {
+            revert InvalidSeaportConduit();
         }
 
-        minDiffBps = newMinDiffBps;
-        emit MinDiffBpsUpdated(newMinDiffBps);
+        seaportConduitKey = newSeaportConduitKey;
+        seaportConduit = newSeaportConduit;
+        emit RoyaltyEngineUpdated(newSeaportConduitKey);
     }
 
     // Public methods
 
-    function createVault(bytes32 seaportConduitKey)
-        external
-        returns (Vault vault)
-    {
-        // Ensure the sender has no vault
-        vault = vaults[msg.sender];
-        if (address(vault) != address(0)) {
-            revert ExistingVault();
-        }
-
-        // Deploy and initialize the vault using EIP1167
-        vault = Vault(
-            payable(
-                address(vaultImplementation).cloneDeterministic(
-                    keccak256(abi.encodePacked(msg.sender))
-                )
-            )
-        );
-        vault.initialize(address(this), msg.sender, seaportConduitKey);
-
-        // Associate the vault to the sender
-        vaults[msg.sender] = vault;
-
-        emit VaultCreated(msg.sender, address(vault));
-    }
-
-    function fill(FillDetails calldata details) external {
-        // Ensure the bid is non-criteria-based
-        ItemKind itemKind = details.bid.itemKind;
+    function fillBid(FillDetails calldata details) external {
+        // Ensure the order is non-criteria-based
+        ItemKind itemKind = details.order.itemKind;
         if (itemKind != ItemKind.ERC721 && itemKind != ItemKind.ERC1155) {
-            revert InvalidBid();
+            revert OrderIsInvalid();
         }
 
-        _fill(details, details.bid.identifierOrCriteria);
+        _fillBid(details, details.order.identifierOrCriteria);
     }
 
-    function fillWithCriteria(
+    function fillBidWithCriteria(
         FillDetails calldata details,
         uint256 identifier,
         bytes32[] calldata criteriaProof
     ) external {
-        // Ensure the bid is criteria-based
-        ItemKind itemKind = details.bid.itemKind;
+        // Ensure the order is criteria-based
+        ItemKind itemKind = details.order.itemKind;
         if (
             itemKind != ItemKind.ERC721_WITH_CRITERIA &&
             itemKind != ItemKind.ERC1155_WITH_CRITERIA
         ) {
-            revert InvalidBid();
+            revert OrderIsInvalid();
         }
 
-        // Ensure the provided identifier matches the bid's criteria
-        if (details.bid.identifierOrCriteria != 0) {
+        // Ensure the provided identifier matches the order's criteria
+        if (details.order.identifierOrCriteria != 0) {
             // The zero criteria will match any identifier
             _verifyCriteriaProof(
                 identifier,
-                details.bid.identifierOrCriteria,
+                details.order.identifierOrCriteria,
                 criteriaProof
             );
         }
 
-        _fill(details, identifier);
+        _fillBid(details, identifier);
     }
 
-    function cancel(Bid[] calldata bids) external {
-        uint256 length = bids.length;
-        for (uint256 i = 0; i < length; ) {
-            Bid memory bid = bids[i];
+    function fillListing(FillDetails calldata details) external payable {
+        // Ensure the order is non-criteria-based
+        ItemKind itemKind = details.order.itemKind;
+        if (itemKind != ItemKind.ERC721 && itemKind != ItemKind.ERC1155) {
+            revert OrderIsInvalid();
+        }
 
-            // Only the bid's maker can cancel
-            if (bid.maker != msg.sender) {
+        _fillListing(details);
+    }
+
+    function cancel(Order[] calldata orders) external {
+        uint256 length = orders.length;
+        for (uint256 i = 0; i < length; ) {
+            Order memory order = orders[i];
+
+            // Only the order's maker can cancel
+            if (order.maker != msg.sender) {
                 revert Unauthorized();
             }
 
-            // Mark the bid as cancelled
-            bytes32 bidHash = getBidHash(bid);
-            bidStatuses[bidHash].cancelled = true;
+            // Mark the order as cancelled
+            bytes32 orderHash = getOrderHash(order);
+            orderStatuses[orderHash].cancelled = true;
 
             unchecked {
                 ++i;
@@ -267,7 +291,7 @@ contract Forward is Ownable {
     function incrementCounter() external {
         // Similar to Seaport's implementation, incrementing the counter
         // will cancel any orders which were signed with a counter value
-        // which is a lower than the updated value.
+        // which is lower than the updated value
         uint256 newCounter;
         unchecked {
             newCounter = ++counters[msg.sender];
@@ -276,135 +300,415 @@ contract Forward is Ownable {
         emit CounterIncremented(msg.sender, newCounter);
     }
 
-    function getBidHash(Bid memory bid) public view returns (bytes32 bidHash) {
+    function getOrderHash(Order memory order)
+        public
+        view
+        returns (bytes32 orderHash)
+    {
+        address maker = order.maker;
+
         // TODO: Optimize by using assembly
-        bidHash = keccak256(
+        orderHash = keccak256(
             abi.encode(
-                BID_TYPEHASH,
-                bid.itemKind,
-                bid.maker,
-                bid.token,
-                bid.identifierOrCriteria,
-                bid.unitPrice,
-                bid.amount,
-                bid.salt,
-                bid.expiration,
-                counters[bid.maker]
+                ORDER_TYPEHASH,
+                order.itemKind,
+                maker,
+                order.token,
+                order.identifierOrCriteria,
+                order.unitPrice,
+                order.amount,
+                order.salt,
+                order.expiration,
+                counters[maker]
             )
         );
     }
 
+    // ERC1271
+
+    function isValidSignature(bytes32 digest, bytes memory signature)
+        external
+        view
+        returns (bytes4)
+    {
+        // Ensure any Seaport order originating from this vault is a listing
+        // in the native token which is paying out the correct royalties (as
+        // specified via the royalty registry).
+
+        (
+            SeaportListingDetails memory listingDetails,
+            bytes memory orderSignature
+        ) = abi.decode(signature, (SeaportListingDetails, bytes));
+
+        // Ensure the listed item's type is ERC721 or ERC1155
+        if (uint8(listingDetails.itemType) < 2) {
+            revert SeaportListingIsInvalid();
+        }
+
+        // The listing should have a single offer item
+        ISeaport.OfferItem[] memory offer = new ISeaport.OfferItem[](1);
+        offer[0] = ISeaport.OfferItem({
+            itemType: listingDetails.itemType,
+            token: listingDetails.token,
+            identifierOrCriteria: listingDetails.identifier,
+            startAmount: listingDetails.amount,
+            endAmount: listingDetails.amount
+        });
+
+        // Keep track of the total payment amount
+        uint256 totalPrice;
+
+        Payment[] memory payments = listingDetails.payments;
+        uint256 paymentsLength = payments.length;
+
+        // Construct the consideration items
+        ISeaport.ConsiderationItem[]
+            memory consideration = new ISeaport.ConsiderationItem[](
+                paymentsLength
+            );
+        {
+            for (uint256 i = 0; i < paymentsLength; ) {
+                Payment memory payment = payments[i];
+
+                uint256 amount = payment.amount;
+                totalPrice += amount;
+
+                consideration[i] = ISeaport.ConsiderationItem({
+                    itemType: ISeaport.ItemType.NATIVE,
+                    token: address(0),
+                    identifierOrCriteria: 0,
+                    startAmount: amount,
+                    endAmount: amount,
+                    recipient: payment.recipient
+                });
+
+                unchecked {
+                    ++i;
+                }
+            }
+        }
+
+        // Ensure the maker owns the listed item(s)
+        uint256 priceAcquiredAt;
+        if (listingDetails.itemType == ISeaport.ItemType.ERC721) {
+            bytes32 itemId = keccak256(
+                abi.encode(listingDetails.token, listingDetails.identifier)
+            );
+
+            ERC721OwnershipStatus memory status = erc721Ownerships[itemId];
+            if (status.owner != listingDetails.maker) {
+                revert SeaportListingIsNotFillable();
+            }
+
+            priceAcquiredAt = uint256(status.priceAcquiredAt);
+        } else {
+            bytes32 itemId = keccak256(
+                abi.encode(
+                    listingDetails.token,
+                    listingDetails.identifier,
+                    listingDetails.maker
+                )
+            );
+
+            ERC1155OwnershipStatus memory status = erc1155Ownerships[itemId];
+            if (status.amount < listingDetails.amount) {
+                revert SeaportListingIsNotFillable();
+            }
+
+            priceAcquiredAt = uint256(status.priceAcquiredAt);
+        }
+
+        // Ensure the listing's price is within `minDiffBps` of the entry price
+        if (totalPrice < (priceAcquiredAt * minDiffBps) / 10000) {
+            revert SeaportListingIsUnderpriced();
+        }
+
+        {
+            // Fetch the item's royalties
+            (
+                address[] memory royaltyRecipients,
+                uint256[] memory royaltyAmounts
+            ) = royaltyEngine.getRoyaltyView(
+                    listingDetails.token,
+                    listingDetails.identifier,
+                    totalPrice
+                );
+
+            // Ensure the royalties are present in the payment items
+            uint256 totalRoyaltyAmount;
+            uint256 diff = paymentsLength - royaltyAmounts.length;
+            for (uint256 i = diff; i < paymentsLength; ) {
+                if (
+                    payments[i].recipient != royaltyRecipients[i - diff] ||
+                    payments[i].amount != royaltyAmounts[i - diff]
+                ) {
+                    revert SeaportListingIsInvalid();
+                }
+
+                totalRoyaltyAmount += royaltyAmounts[i - diff];
+
+                unchecked {
+                    ++i;
+                }
+            }
+        }
+
+        bytes32 orderHash;
+        {
+            ISeaport.OrderComponents memory order;
+            order.offerer = address(this);
+            // order.zone = address(0);
+            order.offer = offer;
+            order.consideration = consideration;
+            order.orderType = ISeaport.OrderType.PARTIAL_OPEN;
+            order.startTime = listingDetails.startTime;
+            order.endTime = listingDetails.endTime;
+            // order.zoneHash = bytes32(0);
+            order.salt = listingDetails.salt;
+            order.conduitKey = seaportConduitKey;
+            order.counter = SEAPORT.getCounter(address(this));
+
+            orderHash = SEAPORT.getOrderHash(order);
+        }
+        if (
+            digest !=
+            keccak256(
+                abi.encodePacked(hex"1901", SEAPORT_DOMAIN_SEPARATOR, orderHash)
+            )
+        ) {
+            revert SeaportListingIsInvalid();
+        }
+
+        _verifySignature(listingDetails.maker, orderHash, orderSignature);
+
+        return this.isValidSignature.selector;
+    }
+
+    // ERC721
+
+    function onERC721Received(
+        address operator,
+        address, // from
+        uint256, // tokenId
+        bytes calldata // data
+    ) external view returns (bytes4) {
+        // Only the protocol can send tokens
+        if (operator != address(this)) {
+            revert Unauthorized();
+        }
+
+        return this.onERC721Received.selector;
+    }
+
+    // ERC1155
+
+    function onERC1155Received(
+        address operator,
+        address, // from
+        uint256, // id
+        uint256, // value
+        bytes calldata // data
+    ) external view returns (bytes4) {
+        // Only the protocol can send tokens
+        if (operator != address(this)) {
+            revert Unauthorized();
+        }
+
+        return this.onERC1155Received.selector;
+    }
+
     // Internal methods
 
-    function _fill(FillDetails memory details, uint256 identifier) internal {
-        // Cache some data for gas-efficiency
-        Bid memory bid = details.bid;
+    function _fillBid(FillDetails memory details, uint256 identifier) internal {
+        Order memory order = details.order;
 
-        address maker = bid.maker;
-        address token = bid.token;
-        uint128 fillAmount = details.fillAmount;
+        // Ensure the order is a bid
+        if (order.orderKind != OrderKind.BID) {
+            revert OrderIsInvalid();
+        }
 
-        // Ensure the bid is not expired
-        if (bid.expiration <= block.timestamp) {
-            revert ExpiredBid();
+        address maker = order.maker;
+        address token = order.token;
+
+        // Ensure the order is not expired
+        if (order.expiration <= block.timestamp) {
+            revert OrderIsExpired();
         }
 
         // Ensure the maker's signature is valid
-        bytes32 eip712Hash = _getEIP712Hash(getBidHash(bid));
+        bytes32 eip712Hash = _getEIP712Hash(getOrderHash(order));
         _verifySignature(maker, eip712Hash, details.signature);
 
-        BidStatus memory bidStatus = bidStatuses[eip712Hash];
-        // Ensure the bid is not cancelled
-        if (bidStatus.cancelled) {
-            revert CancelledBid();
+        OrderStatus memory orderStatus = orderStatuses[eip712Hash];
+        // Ensure the order is not cancelled
+        if (orderStatus.cancelled) {
+            revert OrderIsCancelled();
         }
         // Ensure the amount to fill is available
-        if (bid.amount - bidStatus.filledAmount < fillAmount) {
+        if (order.amount - orderStatus.filledAmount < details.fillAmount) {
             revert InsufficientAmountAvailable();
         }
 
-        // Ensure the maker has initialized a vault
-        Vault vault = vaults[maker];
-        if (address(vault) == address(0)) {
-            revert MissingVault();
-        }
-
-        uint256 totalPrice = bid.unitPrice * fillAmount;
-
-        // Fetch the item's royalties
-        (, uint256[] memory royaltyAmounts) = royaltyEngine.getRoyaltyView(
-            token,
-            identifier,
-            totalPrice
+        // Send the payment to the taker
+        WETH.transferFrom(
+            maker,
+            msg.sender,
+            order.unitPrice * details.fillAmount
         );
 
-        // Compute the total royalty amount
-        uint256 totalRoyaltyAmount;
-        uint256 royaltiesLength = royaltyAmounts.length;
-        for (uint256 i = 0; i < royaltiesLength; ) {
-            totalRoyaltyAmount += royaltyAmounts[i];
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        // Send the payment to the taker
-        WETH.transferFrom(maker, msg.sender, totalPrice - totalRoyaltyAmount);
-
-        // Lock the royalty in the maker's vault
-        WETH.transferFrom(maker, address(vault), totalRoyaltyAmount);
-
         if (
-            bid.itemKind == ItemKind.ERC721 ||
-            bid.itemKind == ItemKind.ERC721_WITH_CRITERIA
+            order.itemKind == ItemKind.ERC721 ||
+            order.itemKind == ItemKind.ERC721_WITH_CRITERIA
         ) {
-            // Ensure ERC721 bids have a fill amount of "1"
-            if (fillAmount != 1) {
+            // Ensure ERC721 orders have a fill amount of 1
+            if (details.fillAmount != 1) {
                 revert InvalidFillAmount();
             }
 
-            // Lock the NFT in the maker's vault
+            // Transfer the token in
             IERC721(token).safeTransferFrom(
                 msg.sender,
-                address(vault),
+                address(this),
                 identifier
             );
 
-            vault.lockERC721(IERC721(token), identifier, totalRoyaltyAmount);
+            // Keep track of the internal ownership status
+            bytes32 itemId = keccak256(abi.encode(token, identifier));
+            erc721Ownerships[itemId].owner = maker;
+            erc721Ownerships[itemId].priceAcquiredAt = order.unitPrice;
+
+            // Give approval for listing if needed
+            address conduit = seaportConduit;
+            bool isApproved = IERC721(token).isApprovedForAll(
+                address(this),
+                conduit
+            );
+            if (!isApproved) {
+                IERC721(token).setApprovalForAll(conduit, true);
+            }
         } else {
-            // Ensure ERC1155 bids have a fill amount of at least "1"
-            if (fillAmount < 1) {
+            // Ensure ERC1155 orders have a fill amount of at least 1
+            if (details.fillAmount < 1) {
                 revert InvalidFillAmount();
             }
 
-            // Lock the NFT in the maker's vault
+            // Transfer the token in
             IERC1155(token).safeTransferFrom(
                 msg.sender,
-                address(vault),
+                address(this),
                 identifier,
-                fillAmount,
+                details.fillAmount,
                 ""
             );
 
-            vault.lockERC1155(
-                IERC1155(token),
-                identifier,
-                fillAmount,
-                totalRoyaltyAmount
+            // Keep track of the internal ownership status
+            bytes32 itemId = keccak256(abi.encode(token, identifier, maker));
+            erc1155Ownerships[itemId].amount += details.fillAmount;
+            erc1155Ownerships[itemId].priceAcquiredAt = order.unitPrice;
+
+            // Give approval for listing if needed
+            address conduit = seaportConduit;
+            bool isApproved = IERC1155(token).isApprovedForAll(
+                address(this),
+                conduit
             );
+            if (!isApproved) {
+                IERC1155(token).setApprovalForAll(conduit, true);
+            }
         }
 
-        // Update the bid's filled amount
-        bidStatuses[eip712Hash].filledAmount += fillAmount;
+        // Update the order's filled amount
+        orderStatuses[eip712Hash].filledAmount += details.fillAmount;
 
-        emit BidFilled(
+        emit OrderFilled(
             eip712Hash,
+            order.orderKind,
             maker,
             msg.sender,
             token,
             identifier,
-            bid.unitPrice,
+            order.unitPrice,
+            details.fillAmount
+        );
+    }
+
+    function _fillListing(FillDetails memory details) internal {
+        Order memory order = details.order;
+
+        // Ensure the order is a listing
+        if (order.orderKind != OrderKind.LISTING) {
+            revert OrderIsInvalid();
+        }
+
+        address maker = order.maker;
+        address token = order.token;
+        uint128 fillAmount = details.fillAmount;
+
+        // Ensure the order is not expired
+        if (order.expiration <= block.timestamp) {
+            revert OrderIsExpired();
+        }
+
+        // Ensure the maker's signature is valid
+        bytes32 eip712Hash = _getEIP712Hash(getOrderHash(order));
+        _verifySignature(maker, eip712Hash, details.signature);
+
+        OrderStatus memory orderStatus = orderStatuses[eip712Hash];
+        // Ensure the order is not cancelled
+        if (orderStatus.cancelled) {
+            revert OrderIsCancelled();
+        }
+        // Ensure the amount to fill is available
+        if (order.amount - orderStatus.filledAmount < fillAmount) {
+            revert InsufficientAmountAvailable();
+        }
+
+        // Send the payment to the maker
+        (bool success, ) = payable(order.maker).call{
+            value: order.unitPrice * fillAmount
+        }("");
+        if (!success) {
+            revert PaymentFailed();
+        }
+
+        uint256 identifier = order.identifierOrCriteria;
+        if (order.itemKind == ItemKind.ERC721) {
+            // Ensure ERC721 orders have a fill amount of 1
+            if (fillAmount != 1) {
+                revert InvalidFillAmount();
+            }
+
+            // Update the internal ownership status
+            bytes32 itemId = keccak256(abi.encode(token, identifier));
+            erc721Ownerships[itemId].owner = msg.sender;
+        } else {
+            // Ensure ERC1155 orders have a fill amount of at least 1
+            if (fillAmount < 1) {
+                revert InvalidFillAmount();
+            }
+
+            // Update the internal ownership status
+            bytes32 makerItemId = keccak256(
+                abi.encode(token, identifier, maker)
+            );
+            erc1155Ownerships[makerItemId].amount -= fillAmount;
+            bytes32 takerItemId = keccak256(
+                abi.encode(token, identifier, msg.sender)
+            );
+            erc1155Ownerships[takerItemId].amount += fillAmount;
+        }
+
+        // Update the order's filled amount
+        orderStatuses[eip712Hash].filledAmount += fillAmount;
+
+        emit OrderFilled(
+            eip712Hash,
+            order.orderKind,
+            maker,
+            msg.sender,
+            token,
+            identifier,
+            order.unitPrice,
             fillAmount
         );
     }
@@ -412,11 +716,12 @@ contract Forward is Ownable {
     function _getEIP712Hash(bytes32 structHash)
         internal
         view
-        returns (bytes32 eip712Hash)
+        returns (bytes32)
     {
-        eip712Hash = keccak256(
-            abi.encodePacked(hex"1901", DOMAIN_SEPARATOR, structHash)
-        );
+        return
+            keccak256(
+                abi.encodePacked(hex"1901", DOMAIN_SEPARATOR, structHash)
+            );
     }
 
     // Taken from:

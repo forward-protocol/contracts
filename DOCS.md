@@ -1,0 +1,7 @@
+- create forward bids (single-token or token-list)
+- once bid is accepted
+  -> keep track of the price the token sold at (unit price for ERC1155)
+  -> move token to global vault (assigning proper internal ownership)
+- once in the global vault
+  -> can list on opensea via seaport (ensure the paid royalties are within X% of the token entry price)
+  -> can list internally (ownership changes within the vault)
