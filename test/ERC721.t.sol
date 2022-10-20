@@ -96,6 +96,41 @@ contract ERC721Test is Test {
         signature = abi.encodePacked(r, s, v);
     }
 
+    function generateForwardListing(
+        uint256 makerPk,
+        address token,
+        uint256 identifier,
+        uint256 unitPrice
+    ) internal returns (Forward.Order memory order, bytes memory signature) {
+        address maker = vm.addr(makerPk);
+
+        // Generate listing
+        order = Forward.Order({
+            orderKind: Forward.OrderKind.LISTING,
+            itemKind: Forward.ItemKind.ERC721,
+            maker: maker,
+            token: token,
+            identifierOrCriteria: identifier,
+            unitPrice: unitPrice,
+            amount: 1,
+            salt: 0,
+            expiration: block.timestamp + 1
+        });
+
+        // Sign listing
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(
+            makerPk,
+            keccak256(
+                abi.encodePacked(
+                    hex"1901",
+                    forward.DOMAIN_SEPARATOR(),
+                    forward.getOrderHash(order)
+                )
+            )
+        );
+        signature = abi.encodePacked(r, s, v);
+    }
+
     function generateSeaportListing(
         uint256 makerPk,
         address token,
@@ -205,6 +240,7 @@ contract ERC721Test is Test {
             );
         }
 
+        // Fetch oracle message for the token's collection floor price
         string[] memory args = new string[](3);
         args[0] = "bash";
         args[1] = "-c";
@@ -236,7 +272,7 @@ contract ERC721Test is Test {
         // We encode the following in the EIP1271 signature:
         // - compacted listing data
         // - actual order signature
-        // - oracle price message
+        // - oracle pricing message
         order.signature = abi.encode(
             Forward.SeaportListingDetails({
                 itemType: ISeaport.ItemType.ERC721,
@@ -325,7 +361,6 @@ contract ERC721Test is Test {
 
         uint256 criteria = uint256(merkle.getRoot(identifiers));
 
-        uint256 identifier = baycIdentifier;
         bytes32[] memory criteriaProof = merkle.getProof(identifiers, 2);
 
         uint256 unitPrice = 1 ether;
@@ -343,7 +378,7 @@ contract ERC721Test is Test {
                 signature: signature,
                 fillAmount: 1
             }),
-            identifier,
+            baycIdentifier,
             criteriaProof
         );
         vm.stopPrank();
@@ -352,15 +387,79 @@ contract ERC721Test is Test {
         require(weth.balanceOf(baycOwner) == unitPrice);
 
         // Ensure the token is now inside the protocol
-        require(ERC721(bayc).ownerOf(identifier) == address(forward));
+        require(ERC721(bayc).ownerOf(baycIdentifier) == address(forward));
 
+        // Ensure the owner is owned by the maker inside the protocol
         address owner = forward.erc721Owners(
-            keccak256(abi.encode(bayc, identifier))
+            keccak256(abi.encode(bayc, baycIdentifier))
         );
         require(owner == alice);
     }
 
-    function testListingWithinTheProtocol() public {
+    function testInternalListing() public {
+        vm.prank(baycOwner);
+        ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
+
+        uint256 bidUnitPrice = 1 ether;
+        (
+            Forward.Order memory bid,
+            bytes memory bidSignature
+        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice);
+
+        // Fill bid
+        vm.startPrank(bob);
+        ERC721(bayc).setApprovalForAll(address(forward), true);
+        forward.fillBid(
+            Forward.FillDetails({
+                order: bid,
+                signature: bidSignature,
+                fillAmount: 1
+            })
+        );
+        vm.stopPrank();
+
+        uint256 listingUnitPrice = 1.5 ether;
+        (
+            Forward.Order memory listing,
+            bytes memory listingSignature
+        ) = generateForwardListing(
+                alicePk,
+                bayc,
+                baycIdentifier,
+                listingUnitPrice
+            );
+
+        uint256 aliceETHBalanceBefore = alice.balance;
+
+        // Fill listing
+        vm.startPrank(carol);
+        forward.fillListing{value: listingUnitPrice}(
+            Forward.FillDetails({
+                order: listing,
+                signature: listingSignature,
+                fillAmount: 1
+            })
+        );
+        vm.stopPrank();
+
+        uint256 aliceETHBalanceAfter = alice.balance;
+
+        // Ensure the maker got the payment from the listing
+        require(
+            aliceETHBalanceAfter - aliceETHBalanceBefore == listingUnitPrice
+        );
+
+        // Ensure the token is still inside the protocol
+        require(ERC721(bayc).ownerOf(baycIdentifier) == address(forward));
+
+        // Ensure the owner is owned by the taker inside the protocol
+        address owner = forward.erc721Owners(
+            keccak256(abi.encode(bayc, baycIdentifier))
+        );
+        require(owner == carol);
+    }
+
+    function testExternalListing() public {
         vm.prank(baycOwner);
         ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
 
@@ -415,216 +514,4 @@ contract ERC721Test is Test {
                 listingPrice - totalRoyaltyAmount
         );
     }
-
-    // function testListingFromVaultWithAutomaticUnlock() public {
-    //     uint256 identifier = 1;
-    //     uint256 bidUnitPrice = 1 ether;
-    //     (
-    //         address[] memory royaltyRecipients,
-    //         uint256[] memory royaltyBps,
-    //     ) = generateRoyalties(2, 0);
-
-    //     (
-    //         NFT nft,
-    //         Vault vault,
-    //         Forward.Bid memory bid,
-    //         bytes memory signature
-    //     ) = generateForwardBid(
-    //             alicePk,
-    //             identifier,
-    //             bidUnitPrice,
-    //             1,
-    //             royaltyRecipients,
-    //             royaltyBps
-    //         );
-
-    //     // Fill bid
-    //     vm.startPrank(bob);
-    //     nft.mint(identifier);
-    //     nft.setApprovalForAll(address(forward), true);
-    //     forward.fill(
-    //         Forward.FillDetails({bid: bid, signature: signature, fillAmount: 1})
-    //     );
-    //     vm.stopPrank();
-
-    //     uint256 listingPrice = 1.5 ether;
-    //     ISeaport.Order memory order = generateSeaportListing(
-    //         alicePk,
-    //         nft,
-    //         identifier,
-    //         listingPrice
-    //     );
-
-    //     // Tweak the order to include the unlock consideration as a tip
-    //     ISeaport.ConsiderationItem[]
-    //         memory consideration = new ISeaport.ConsiderationItem[](
-    //             order.parameters.consideration.length + 1
-    //         );
-    //     for (uint256 i = 0; i < order.parameters.consideration.length; i++) {
-    //         consideration[i] = order.parameters.consideration[i];
-    //     }
-    //     consideration[consideration.length - 1] = ISeaport.ConsiderationItem({
-    //         itemType: ISeaport.ItemType.ERC1155,
-    //         token: address(vaultUnlocker),
-    //         // id
-    //         identifierOrCriteria: uint256(uint160(address(nft))),
-    //         // value
-    //         startAmount: identifier,
-    //         endAmount: identifier,
-    //         // to
-    //         recipient: address(vault)
-    //     });
-    //     order.parameters.consideration = consideration;
-
-    //     // Fill listing
-    //     vm.startPrank(carol);
-    //     vault.SEAPORT().fulfillOrder{value: listingPrice}(order, bytes32(0));
-    //     vm.stopPrank();
-
-    //     // Ensure the royalties got unlocked from the vault
-    //     require(WETH.balanceOf(address(vault)) == 0);
-    // }
-
-    // function testForceUnlock() public {
-    //     uint256 identifier = 1;
-    //     uint256 bidUnitPrice = 1 ether;
-    //     (
-    //         address[] memory royaltyRecipients,
-    //         uint256[] memory royaltyBps,
-    //     ) = generateRoyalties(2, 0);
-
-    //     (
-    //         NFT nft,
-    //         Vault vault,
-    //         Forward.Bid memory bid,
-    //         bytes memory signature
-    //     ) = generateForwardBid(
-    //             alicePk,
-    //             identifier,
-    //             bidUnitPrice,
-    //             1,
-    //             royaltyRecipients,
-    //             royaltyBps
-    //         );
-
-    //     // Fill bid
-    //     vm.startPrank(bob);
-    //     nft.mint(identifier);
-    //     nft.setApprovalForAll(address(forward), true);
-    //     forward.fill(
-    //         Forward.FillDetails({bid: bid, signature: signature, fillAmount: 1})
-    //     );
-    //     vm.stopPrank();
-
-    //     vm.prank(alice);
-    //     vault.unlockERC721(nft, identifier);
-
-    //     // Ensure the royalties got unlocked from the vault
-    //     require(WETH.balanceOf(address(vault)) == 0);
-
-    //     // Ensure the royalties got paid
-    //     for (uint256 i = 0; i < royaltyBps.length; i++) {
-    //         require(WETH.balanceOf(royaltyRecipients[i]) == bidUnitPrice * royaltyBps[i] / 10000);
-    //     }
-    // }
-
-    // function testUpdatedRoyalties() public {
-    //     uint256 identifier = 1;
-    //     uint256 bidUnitPrice = 1 ether;
-    //     (
-    //         address[] memory royaltyRecipients,
-    //         uint256[] memory royaltyBps,
-    //     ) = generateRoyalties(2, 0);
-
-    //     (
-    //         NFT nft,
-    //         Vault vault,
-    //         Forward.Bid memory bid,
-    //         bytes memory signature
-    //     ) = generateForwardBid(
-    //             alicePk,
-    //             identifier,
-    //             bidUnitPrice,
-    //             1,
-    //             royaltyRecipients,
-    //             royaltyBps
-    //         );
-
-    //     // Fill bid
-    //     vm.startPrank(bob);
-    //     nft.mint(identifier);
-    //     nft.setApprovalForAll(address(forward), true);
-    //     forward.fill(
-    //         Forward.FillDetails({bid: bid, signature: signature, fillAmount: 1})
-    //     );
-    //     vm.stopPrank();
-
-    //     // Update royalties
-    //     (
-    //         address[] memory newRoyaltyRecipients,
-    //         uint256[] memory newRoyaltyBps,
-    //         uint256 newTotalBps
-    //     ) = generateRoyalties(3, 1);
-    //     nft.setRoyalties(newRoyaltyRecipients, newRoyaltyBps);
-
-    //     // Fetch the locked royalty amount
-    //     uint256 lockedRoyalty = vault.erc721Locks(keccak256(abi.encode(address(nft), identifier)));
-
-    //     vm.prank(alice);
-    //     vault.unlockERC721(nft, identifier);
-
-    //     // Ensure the royalties got paid to the new recipients
-    //     for (uint256 i = 0; i < newRoyaltyBps.length; i++) {
-    //         require(WETH.balanceOf(newRoyaltyRecipients[i]) == lockedRoyalty * newRoyaltyBps[i] / newTotalBps);
-    //     }
-    // }
-
-    // function testLowListingRoyalties() public {
-    //     uint256 identifier = 1;
-    //     uint256 bidUnitPrice = 1 ether;
-    //     (
-    //         address[] memory royaltyRecipients,
-    //         uint256[] memory royaltyBps,
-    //     ) = generateRoyalties(3, 0);
-
-    //     (
-    //         NFT nft,
-    //         Vault vault,
-    //         Forward.Bid memory bid,
-    //         bytes memory signature
-    //     ) = generateForwardBid(
-    //             alicePk,
-    //             identifier,
-    //             bidUnitPrice,
-    //             1,
-    //             royaltyRecipients,
-    //             royaltyBps
-    //         );
-
-    //     // Fill bid
-    //     vm.startPrank(bob);
-    //     nft.mint(identifier);
-    //     nft.setApprovalForAll(address(forward), true);
-    //     forward.fill(
-    //         Forward.FillDetails({bid: bid, signature: signature, fillAmount: 1})
-    //     );
-    //     vm.stopPrank();
-
-    //     uint256 minDiffBps = forward.minDiffBps();
-
-    //     uint256 listingPrice = bidUnitPrice * minDiffBps / 10000 - 1;
-    //     ISeaport.Order memory order = generateSeaportListing(
-    //         alicePk,
-    //         nft,
-    //         identifier,
-    //         listingPrice
-    //     );
-
-    //     // Cannot fill an order for which the royalties are not within the protocol threshold
-    //     vm.startPrank(carol);
-    //     ISeaport seaport = vault.SEAPORT();
-    //     vm.expectRevert(Vault.InvalidListing.selector);
-    //     seaport.fulfillOrder{value: listingPrice}(order, bytes32(0));
-    //     vm.stopPrank();
-    // }
 }
