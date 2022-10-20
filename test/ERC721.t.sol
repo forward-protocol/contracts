@@ -505,7 +505,7 @@ contract ERC721Test is Test {
 
         uint256 aliceETHBalanceAfter = alice.balance;
 
-        // Fetch the royalties to be paid on the listing
+        // Fetch the royalties to be paid relative to the listing's price
         uint256 totalRoyaltyAmount = getTotalRoyaltyAmount(
             bayc,
             baycIdentifier,
@@ -562,12 +562,36 @@ contract ERC721Test is Test {
         bytes[] memory data = new bytes[](1);
         data[0] = fetchOracleOffChainData();
 
-        // Withdraw
+        // Must pay royalties when withdrawing
         vm.startPrank(baycOwner);
         vm.expectRevert(Forward.PaymentFailed.selector);
         forward.withdrawERC721s(items, data, baycOwner);
         vm.stopPrank();
 
-        // TODO: Add successfull withdraw test
+        uint256 floorPrice = oracle.getCollectionFloorPriceByToken(
+            bayc,
+            baycIdentifier,
+            1 minutes,
+            data[0]
+        );
+
+        // Fetch the royalties to be paid relative to the collection's floor price
+        uint256 totalRoyaltyAmount = getTotalRoyaltyAmount(
+            bayc,
+            baycIdentifier,
+            floorPrice
+        );
+
+        // Withdraw
+        vm.startPrank(baycOwner);
+        forward.withdrawERC721s{value: totalRoyaltyAmount}(
+            items,
+            data,
+            baycOwner
+        );
+        vm.stopPrank();
+
+        // Ensure the token is now in the withdrawer's wallet
+        require(ERC721(bayc).ownerOf(baycIdentifier) == baycOwner);
     }
 }
