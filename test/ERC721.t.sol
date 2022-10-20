@@ -53,6 +53,38 @@ contract ERC721Test is Test {
 
     // Helper methods
 
+    function fetchOracleOffChainData() internal returns (bytes memory) {
+        // Fetch oracle message for the token's collection floor price
+        string[] memory args = new string[](3);
+        args[0] = "bash";
+        args[1] = "-c";
+        args[
+            2
+        ] = "curl -s https://api.reservoir.tools/oracle/collections/floor-ask/v4?token=0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d:7090&kind=spot&twapSeconds=0";
+
+        string memory rawOracleResponse = string(vm.ffi(args));
+        ReservoirOracle.Message memory message = ReservoirOracle.Message({
+            id: abi.decode(
+                rawOracleResponse.parseRaw(".message.id"),
+                (bytes32)
+            ),
+            payload: abi.decode(
+                rawOracleResponse.parseRaw(".message.payload"),
+                (bytes)
+            ),
+            timestamp: abi.decode(
+                rawOracleResponse.parseRaw(".message.timestamp"),
+                (uint256)
+            ),
+            signature: abi.decode(
+                rawOracleResponse.parseRaw(".message.signature"),
+                (bytes)
+            )
+        });
+
+        return abi.encode(message);
+    }
+
     function generateForwardBid(
         uint256 makerPk,
         address token,
@@ -240,34 +272,6 @@ contract ERC721Test is Test {
             );
         }
 
-        // Fetch oracle message for the token's collection floor price
-        string[] memory args = new string[](3);
-        args[0] = "bash";
-        args[1] = "-c";
-        args[
-            2
-        ] = "curl -s https://api.reservoir.tools/oracle/collections/floor-ask/v4?token=0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d:7090&kind=spot&twapSeconds=0";
-
-        string memory rawOracleResponse = string(vm.ffi(args));
-        ReservoirOracle.Message memory message = ReservoirOracle.Message({
-            id: abi.decode(
-                rawOracleResponse.parseRaw(".message.id"),
-                (bytes32)
-            ),
-            payload: abi.decode(
-                rawOracleResponse.parseRaw(".message.payload"),
-                (bytes)
-            ),
-            timestamp: abi.decode(
-                rawOracleResponse.parseRaw(".message.timestamp"),
-                (uint256)
-            ),
-            signature: abi.decode(
-                rawOracleResponse.parseRaw(".message.signature"),
-                (bytes)
-            )
-        });
-
         order.parameters = parameters;
         // We encode the following in the EIP1271 signature:
         // - compacted listing data
@@ -285,7 +289,7 @@ contract ERC721Test is Test {
                 payments: payments
             }),
             signature,
-            abi.encode(message)
+            fetchOracleOffChainData()
         );
     }
 
@@ -540,5 +544,30 @@ contract ERC721Test is Test {
             })
         );
         vm.stopPrank();
+    }
+
+    function testForceWithdraw() external {
+        Forward.ERC721Item[] memory items = new Forward.ERC721Item[](1);
+        items[0] = Forward.ERC721Item({
+            token: ERC721(bayc),
+            identifier: baycIdentifier
+        });
+
+        // Deposit
+        vm.startPrank(baycOwner);
+        ERC721(bayc).setApprovalForAll(address(forward), true);
+        forward.depositERC721s(items);
+        vm.stopPrank();
+
+        bytes[] memory data = new bytes[](1);
+        data[0] = fetchOracleOffChainData();
+
+        // Withdraw
+        vm.startPrank(baycOwner);
+        vm.expectRevert(Forward.PaymentFailed.selector);
+        forward.withdrawERC721s(items, data, baycOwner);
+        vm.stopPrank();
+
+        // TODO: Add successfull withdraw test
     }
 }
