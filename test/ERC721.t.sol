@@ -396,7 +396,7 @@ contract ERC721Test is Test {
         require(owner == alice);
     }
 
-    function testInternalListing() public {
+    function testFillInternalListing() public {
         vm.prank(baycOwner);
         ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
 
@@ -459,7 +459,7 @@ contract ERC721Test is Test {
         require(owner == carol);
     }
 
-    function testExternalListing() public {
+    function testFillExternalListing() public {
         vm.prank(baycOwner);
         ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
 
@@ -513,5 +513,32 @@ contract ERC721Test is Test {
             aliceETHBalanceAfter - aliceETHBalanceBefore ==
                 listingPrice - totalRoyaltyAmount
         );
+    }
+
+    function testCounterIncrement() public {
+        vm.prank(baycOwner);
+        ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
+
+        uint256 bidUnitPrice = 1 ether;
+        (
+            Forward.Order memory forwardOrder,
+            bytes memory signature
+        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice);
+
+        vm.prank(alice);
+        forward.incrementCounter();
+
+        // Incrementing the counter invalidates any previously signed orders
+        vm.startPrank(bob);
+        ERC721(bayc).setApprovalForAll(address(forward), true);
+        vm.expectRevert(Forward.InvalidSignature.selector);
+        forward.fillBid(
+            Forward.FillDetails({
+                order: forwardOrder,
+                signature: signature,
+                fillAmount: 1
+            })
+        );
+        vm.stopPrank();
     }
 }
