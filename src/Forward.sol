@@ -2,6 +2,7 @@
 pragma solidity ^0.8.17;
 
 import {Ownable} from "openzeppelin/access/Ownable.sol";
+import {ReentrancyGuard} from "openzeppelin/security/ReentrancyGuard.sol";
 import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
 import {IERC721} from "openzeppelin/token/ERC721/IERC721.sol";
 import {IERC1155} from "openzeppelin/token/ERC1155/IERC1155.sol";
@@ -10,7 +11,7 @@ import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
 import {IRoyaltyEngine} from "./interfaces/IRoyaltyEngine.sol";
 import {IConduitController, ISeaport} from "./interfaces/ISeaport.sol";
 
-contract Forward is Ownable {
+contract Forward is Ownable, ReentrancyGuard {
     // Enums
 
     enum ItemKind {
@@ -50,13 +51,23 @@ contract Forward is Ownable {
         uint128 filledAmount;
     }
 
+    struct ERC721Item {
+        IERC721 token;
+        uint256 identifier;
+    }
+
+    struct ERC1155Item {
+        IERC1155 token;
+        uint256 identifier;
+        uint128 amount;
+    }
+
     struct Payment {
         uint256 amount;
         address recipient;
     }
 
     struct SeaportListingDetails {
-        address maker;
         ISeaport.ItemType itemType;
         address token;
         uint256 identifier;
@@ -90,10 +101,15 @@ contract Forward is Ownable {
 
     // Events
 
+    event MigrationUpdated(address migration);
+    event MinDiffBpsUpdated(uint256 newMinDiffBps);
+    event PriceOracleUpdated(address newPriceOracle);
     event RoyaltyEngineUpdated(address newRoyaltyEngine);
-    event SeaportConduitUpdated(address newSeaportConduitKey);
+    event SeaportConduitUpdated(bytes32 newSeaportConduitKey);
 
-    event OrderCancelled(bytes32 bidHash);
+    event CounterIncremented(address maker, uint256 newCounter);
+
+    event OrderCancelled(bytes32 orderHash);
     event OrderFilled(
         bytes32 orderHash,
         OrderKind orderKind,
@@ -101,11 +117,9 @@ contract Forward is Ownable {
         address taker,
         address token,
         uint256 identifier,
-        uint96 unitPrice,
+        uint256 unitPrice,
         uint128 amount
     );
-
-    event CounterIncremented(address maker, uint256 newCounter);
 
     // Public constants
 
@@ -119,12 +133,28 @@ contract Forward is Ownable {
         IConduitController(0x00000000F9490004C11Cef243f5400493c00Ad63);
 
     bytes32 public constant SEAPORT_DOMAIN_SEPARATOR =
-        0x712fdde1f147adcbb0fabb1aeb9c2d317530a46d266db095bc40c606fe94f0c2;
+        0xb50c8913581289bd2e066aeef89fceb9615d490d673131fd1a7047436706834e;
+
+    uint256 public constant WITHDRAW_ORACLE_MAX_MESSAGE_AGE = 30 minutes;
+    uint256 public constant LIST_ORACLE_MAX_MESSAGE_AGE = 1 days;
 
     bytes32 public immutable DOMAIN_SEPARATOR;
     bytes32 public immutable ORDER_TYPEHASH;
 
     // Public fields
+
+    // Used for royalty-free migrations to new versions
+    address public migration;
+
+    // To avoid the possbility of evading royalties (by withdrawing
+    // via private listings to a different own wallet for a zero or
+    // very low price), we enforce the price of every listing which
+    // is outgoing to be within a percentage of the collection floor
+    // price (as specified via an off-chain pricing oracle)
+    uint256 public minDiffBps;
+
+    // Pricing oracle
+    IPriceOracle public priceOracle;
 
     // Royalty engine compatible contract used for royalty lookups
     IRoyaltyEngine public royaltyEngine;
@@ -133,7 +163,7 @@ contract Forward is Ownable {
     bytes32 public seaportConduitKey;
     address public seaportConduit;
 
-    // Mapping from order hash to order status (eg. cancelled and amount filled)
+    // Mapping from order hash to order status (eg. cancelled and/or amount filled)
     mapping(bytes32 => OrderStatus) public orderStatuses;
     // Mapping from wallet to current counter
     mapping(address => uint256) public counters;
@@ -145,10 +175,13 @@ contract Forward is Ownable {
 
     // Constructor
 
-    constructor() {
+    constructor(address initialPriceOracle) {
+        minDiffBps = 8000; // 80%
+        priceOracle = IPriceOracle(initialPriceOracle);
+
         // Use the default royalty engine
         royaltyEngine = IRoyaltyEngine(
-            0xe7c9Cb6D966f76f3B5142167088927Bf34966a1f
+            0x0385603ab55642cb4Dd5De3aE9e306809991804f
         );
 
         // Use OpenSea's default conduit (so that Seaport listings are available on OpenSea)
@@ -187,9 +220,9 @@ contract Forward is Ownable {
                 "address maker,",
                 "address token,",
                 "uint256 identifierOrCriteria,",
-                "uint96 unitPrice,",
+                "uint256 unitPrice,",
                 "uint128 amount,",
-                "uint128 salt,",
+                "uint256 salt,",
                 "uint256 expiration,",
                 "uint256 counter",
                 ")"
@@ -199,12 +232,22 @@ contract Forward is Ownable {
 
     // Restricted methods
 
+    function updateMigration(address newMigration) external onlyOwner {
+        migration = newMigration;
+        emit MigrationUpdated(newMigration);
+    }
+
+    function updatePriceOracle(address newPriceOracle) external onlyOwner {
+        priceOracle = IPriceOracle(newPriceOracle);
+        emit PriceOracleUpdated(newPriceOracle);
+    }
+
     function updateRoyaltyEngine(address newRoyaltyEngine) external onlyOwner {
         royaltyEngine = IRoyaltyEngine(newRoyaltyEngine);
         emit RoyaltyEngineUpdated(newRoyaltyEngine);
     }
 
-    function updateSeaportConduit(address newSeaportConduitKey)
+    function updateSeaportConduit(bytes32 newSeaportConduitKey)
         external
         onlyOwner
     {
@@ -216,12 +259,12 @@ contract Forward is Ownable {
 
         seaportConduitKey = newSeaportConduitKey;
         seaportConduit = newSeaportConduit;
-        emit RoyaltyEngineUpdated(newSeaportConduitKey);
+        emit SeaportConduitUpdated(newSeaportConduitKey);
     }
 
     // Public methods
 
-    function fillBid(FillDetails calldata details) external {
+    function fillBid(FillDetails calldata details) external nonReentrant {
         // Ensure the order is non-criteria-based
         ItemKind itemKind = details.order.itemKind;
         if (itemKind != ItemKind.ERC721 && itemKind != ItemKind.ERC1155) {
@@ -235,7 +278,7 @@ contract Forward is Ownable {
         FillDetails calldata details,
         uint256 identifier,
         bytes32[] calldata criteriaProof
-    ) external {
+    ) external nonReentrant {
         // Ensure the order is criteria-based
         ItemKind itemKind = details.order.itemKind;
         if (
@@ -258,7 +301,11 @@ contract Forward is Ownable {
         _fillBid(details, identifier);
     }
 
-    function fillListing(FillDetails calldata details) external payable {
+    function fillListing(FillDetails calldata details)
+        external
+        payable
+        nonReentrant
+    {
         // Ensure the order is non-criteria-based
         ItemKind itemKind = details.order.itemKind;
         if (itemKind != ItemKind.ERC721 && itemKind != ItemKind.ERC1155) {
@@ -285,6 +332,8 @@ contract Forward is Ownable {
             unchecked {
                 ++i;
             }
+
+            emit OrderCancelled(orderHash);
         }
     }
 
@@ -298,6 +347,200 @@ contract Forward is Ownable {
         }
 
         emit CounterIncremented(msg.sender, newCounter);
+    }
+
+    function depositERC721s(ERC721Item[] calldata items) external nonReentrant {
+        uint256 length = items.length;
+        for (uint256 i = 0; i < length; ) {
+            ERC721Item calldata item = items[i];
+
+            bytes32 itemId = keccak256(abi.encode(item.token, item.identifier));
+            erc721Owners[itemId] = msg.sender;
+
+            item.token.safeTransferFrom(
+                msg.sender,
+                address(this),
+                item.identifier
+            );
+
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function depositERC1155s(ERC1155Item[] calldata items)
+        external
+        nonReentrant
+    {
+        uint256 length = items.length;
+        for (uint256 i = 0; i < length; ) {
+            ERC1155Item calldata item = items[i];
+
+            bytes32 itemId = keccak256(
+                abi.encode(item.token, item.identifier, msg.sender)
+            );
+            erc1155Amounts[itemId] += item.amount;
+
+            item.token.safeTransferFrom(
+                msg.sender,
+                address(this),
+                item.identifier,
+                item.amount,
+                ""
+            );
+
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function withdrawERC721s(
+        ERC721Item[] memory items,
+        bytes[] memory data,
+        address recipient
+    ) public payable nonReentrant {
+        uint256 itemsLength = items.length;
+        for (uint256 i = 0; i < itemsLength; ) {
+            ERC721Item memory item = items[i];
+
+            bytes32 itemId = keccak256(abi.encode(item.token, item.identifier));
+            address owner = erc721Owners[itemId];
+            if (msg.sender != owner) {
+                revert Unauthorized();
+            }
+
+            // Only pay royalties when not migrating
+            if (recipient == migration) {
+                if (migration == address(0)) {
+                    revert Unauthorized();
+                }
+
+                item.token.safeTransferFrom(
+                    address(this),
+                    recipient,
+                    item.identifier,
+                    // Interpreted as migration-specific data
+                    data[i]
+                );
+            } else {
+                // Fetch the token collection's floor price
+                uint256 floorPrice = priceOracle.getCollectionFloorPriceByToken(
+                        address(item.token),
+                        item.identifier,
+                        WITHDRAW_ORACLE_MAX_MESSAGE_AGE,
+                        // Interpreted as oracle-specific data
+                        data[i]
+                    );
+
+                // Fetch the item's royalties (relative to the collection floor price)
+                (
+                    address[] memory royaltyRecipients,
+                    uint256[] memory royaltyAmounts
+                ) = royaltyEngine.getRoyaltyView(
+                        address(item.token),
+                        item.identifier,
+                        floorPrice
+                    );
+
+                // Pay the royalties
+                uint256 recipientsLength = royaltyRecipients.length;
+                for (uint256 j = 0; j < recipientsLength; ) {
+                    _sendPayment(royaltyRecipients[i], royaltyAmounts[i]);
+
+                    unchecked {
+                        ++j;
+                    }
+                }
+
+                item.token.safeTransferFrom(
+                    address(this),
+                    recipient,
+                    item.identifier
+                );
+            }
+
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function withdrawERC1155s(
+        ERC1155Item[] memory items,
+        bytes[] memory data,
+        address recipient
+    ) public payable nonReentrant {
+        uint256 itemsLength = items.length;
+        for (uint256 i = 0; i < itemsLength; ) {
+            ERC1155Item memory item = items[i];
+
+            bytes32 itemId = keccak256(
+                abi.encode(item.token, item.identifier, msg.sender)
+            );
+            uint256 amount = erc1155Amounts[itemId];
+            if (item.amount > amount) {
+                revert Unauthorized();
+            }
+
+            // Only pay royalties when not migrating
+            if (recipient == migration) {
+                if (migration == address(0)) {
+                    revert Unauthorized();
+                }
+
+                item.token.safeTransferFrom(
+                    address(this),
+                    recipient,
+                    item.identifier,
+                    item.amount,
+                    // Interpreted as migration-specific data
+                    data[i]
+                );
+            } else {
+                // Fetch the token collection's floor price
+                uint256 floorPrice = priceOracle.getCollectionFloorPriceByToken(
+                        address(item.token),
+                        item.identifier,
+                        WITHDRAW_ORACLE_MAX_MESSAGE_AGE,
+                        // Interpreted as oracle-specific data
+                        data[i]
+                    );
+
+                // Fetch the item's royalties (relative to the collection floor price)
+                (
+                    address[] memory royaltyRecipients,
+                    uint256[] memory royaltyAmounts
+                ) = royaltyEngine.getRoyaltyView(
+                        address(item.token),
+                        item.identifier,
+                        floorPrice * item.amount
+                    );
+
+                // Pay the royalties
+                uint256 recipientsLength = royaltyRecipients.length;
+                for (uint256 j = 0; j < recipientsLength; ) {
+                    _sendPayment(royaltyRecipients[i], royaltyAmounts[i]);
+
+                    unchecked {
+                        ++j;
+                    }
+                }
+
+                item.token.safeTransferFrom(
+                    address(this),
+                    recipient,
+                    item.identifier,
+                    item.amount,
+                    ""
+                );
+            }
+
+            unchecked {
+                ++i;
+            }
+        }
     }
 
     function getOrderHash(Order memory order)
@@ -333,12 +576,13 @@ contract Forward is Ownable {
     {
         // Ensure any Seaport order originating from this vault is a listing
         // in the native token which is paying out the correct royalties (as
-        // specified via the royalty registry).
+        // specified via the royalty registry)
 
         (
             SeaportListingDetails memory listingDetails,
-            bytes memory orderSignature
-        ) = abi.decode(signature, (SeaportListingDetails, bytes));
+            bytes memory orderSignature,
+            bytes memory oracleOffChainData
+        ) = abi.decode(signature, (SeaportListingDetails, bytes, bytes));
 
         // Ensure the listed item's type is ERC721 or ERC1155
         if (uint8(listingDetails.itemType) < 2) {
@@ -388,38 +632,41 @@ contract Forward is Ownable {
             }
         }
 
+        address maker = payments[0].recipient;
+
         // Ensure the maker owns the listed item(s)
-        uint256 priceAcquiredAt;
         if (listingDetails.itemType == ISeaport.ItemType.ERC721) {
             bytes32 itemId = keccak256(
                 abi.encode(listingDetails.token, listingDetails.identifier)
             );
 
-            ERC721OwnershipStatus memory status = erc721Ownerships[itemId];
-            if (status.owner != listingDetails.maker) {
+            if (erc721Owners[itemId] != maker) {
                 revert SeaportListingIsNotFillable();
             }
-
-            priceAcquiredAt = uint256(status.priceAcquiredAt);
         } else {
             bytes32 itemId = keccak256(
                 abi.encode(
                     listingDetails.token,
                     listingDetails.identifier,
-                    listingDetails.maker
+                    maker
                 )
             );
 
-            ERC1155OwnershipStatus memory status = erc1155Ownerships[itemId];
-            if (status.amount < listingDetails.amount) {
+            if (erc1155Amounts[itemId] < listingDetails.amount) {
                 revert SeaportListingIsNotFillable();
             }
-
-            priceAcquiredAt = uint256(status.priceAcquiredAt);
         }
 
-        // Ensure the listing's price is within `minDiffBps` of the entry price
-        if (totalPrice < (priceAcquiredAt * minDiffBps) / 10000) {
+        // Fetch the collection's floor price
+        uint256 price = priceOracle.getCollectionFloorPriceByToken(
+            listingDetails.token,
+            listingDetails.identifier,
+            LIST_ORACLE_MAX_MESSAGE_AGE,
+            oracleOffChainData
+        );
+
+        // Ensure the listing's price is within `minDiffBps` of the token collection's floor price
+        if (totalPrice < (price * minDiffBps) / 10000) {
             revert SeaportListingIsUnderpriced();
         }
 
@@ -470,6 +717,7 @@ contract Forward is Ownable {
 
             orderHash = SEAPORT.getOrderHash(order);
         }
+
         if (
             digest !=
             keccak256(
@@ -479,7 +727,7 @@ contract Forward is Ownable {
             revert SeaportListingIsInvalid();
         }
 
-        _verifySignature(listingDetails.maker, orderHash, orderSignature);
+        _verifySignature(maker, digest, orderSignature);
 
         return this.isValidSignature.selector;
     }
@@ -574,8 +822,7 @@ contract Forward is Ownable {
 
             // Keep track of the internal ownership status
             bytes32 itemId = keccak256(abi.encode(token, identifier));
-            erc721Ownerships[itemId].owner = maker;
-            erc721Ownerships[itemId].priceAcquiredAt = order.unitPrice;
+            erc721Owners[itemId] = maker;
 
             // Give approval for listing if needed
             address conduit = seaportConduit;
@@ -603,8 +850,7 @@ contract Forward is Ownable {
 
             // Keep track of the internal ownership status
             bytes32 itemId = keccak256(abi.encode(token, identifier, maker));
-            erc1155Ownerships[itemId].amount += details.fillAmount;
-            erc1155Ownerships[itemId].priceAcquiredAt = order.unitPrice;
+            erc1155Amounts[itemId] += details.fillAmount;
 
             // Give approval for listing if needed
             address conduit = seaportConduit;
@@ -664,12 +910,7 @@ contract Forward is Ownable {
         }
 
         // Send the payment to the maker
-        (bool success, ) = payable(order.maker).call{
-            value: order.unitPrice * fillAmount
-        }("");
-        if (!success) {
-            revert PaymentFailed();
-        }
+        _sendPayment(order.maker, order.unitPrice * fillAmount);
 
         uint256 identifier = order.identifierOrCriteria;
         if (order.itemKind == ItemKind.ERC721) {
@@ -680,7 +921,7 @@ contract Forward is Ownable {
 
             // Update the internal ownership status
             bytes32 itemId = keccak256(abi.encode(token, identifier));
-            erc721Ownerships[itemId].owner = msg.sender;
+            erc721Owners[itemId] = msg.sender;
         } else {
             // Ensure ERC1155 orders have a fill amount of at least 1
             if (fillAmount < 1) {
@@ -691,11 +932,11 @@ contract Forward is Ownable {
             bytes32 makerItemId = keccak256(
                 abi.encode(token, identifier, maker)
             );
-            erc1155Ownerships[makerItemId].amount -= fillAmount;
+            erc1155Amounts[makerItemId] -= fillAmount;
             bytes32 takerItemId = keccak256(
                 abi.encode(token, identifier, msg.sender)
             );
-            erc1155Ownerships[takerItemId].amount += fillAmount;
+            erc1155Amounts[takerItemId] += fillAmount;
         }
 
         // Update the order's filled amount
@@ -722,6 +963,13 @@ contract Forward is Ownable {
             keccak256(
                 abi.encodePacked(hex"1901", DOMAIN_SEPARATOR, structHash)
             );
+    }
+
+    function _sendPayment(address to, uint256 value) internal {
+        (bool success, ) = payable(to).call{value: value}("");
+        if (!success) {
+            revert PaymentFailed();
+        }
     }
 
     // Taken from:

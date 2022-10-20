@@ -5,6 +5,7 @@ interface IPriceOracle {
     function getCollectionFloorPriceByToken(
         address token,
         uint256 tokenId,
-        address currency
-    ) external view returns (uint256 price);
+        uint256 maxMessageAge,
+        bytes calldata offChainData
+    ) external view returns (uint256);
 }

@@ -1,58 +1,29 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
+import {stdJson} from "forge-std/StdJson.sol";
 import {Test} from "forge-std/Test.sol";
 import {Merkle} from "murky/Merkle.sol";
 import {ERC721} from "openzeppelin/token/ERC721/ERC721.sol";
+import {ReservoirOracle} from "oracle/ReservoirOracle.sol";
 
 import {Forward} from "../src/Forward.sol";
+import {ReservoirPriceOracle} from "../src/ReservoirPriceOracle.sol";
 import {ISeaport} from "../src/interfaces/ISeaport.sol";
 import {IWETH} from "../src/interfaces/IWETH.sol";
 
-contract NFT is ERC721 {
-    address[] private recipients;
-    uint256[] private bps;
-
-    constructor(address[] memory _recipients, uint256[] memory _bps)
-        ERC721("NFT", "NFT")
-    {
-        setRoyalties(_recipients, _bps);
-    }
-
-    function mint(uint256 tokenId) external {
-        _mint(msg.sender, tokenId);
-    }
-
-    function setRoyalties(address[] memory _recipients, uint256[] memory _bps)
-        public
-    {
-        // Clear old royalties
-        delete recipients;
-        delete bps;
-
-        for (uint256 i = 0; i < _bps.length; i++) {
-            recipients.push(_recipients[i]);
-            bps.push(_bps[i]);
-        }
-    }
-
-    // Use the Manifold standard to allow multiple royalties
-    function getRoyalties(
-        uint256 // identifier
-    )
-        external
-        view
-        returns (address[] memory _recipients, uint256[] memory _bps)
-    {
-        _recipients = recipients;
-        _bps = bps;
-    }
-}
+import "forge-std/console.sol";
 
 contract ERC721Test is Test {
-    Forward internal forward;
+    using stdJson for string;
 
-    IWETH internal WETH;
+    ReservoirPriceOracle internal oracle;
+    Forward internal forward;
+    IWETH internal weth;
+
+    address internal bayc = 0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D;
+    address internal baycOwner = 0x8AD272Ac86c6C88683d9a60eb8ED57E6C304bB0C;
+    uint256 internal baycIdentifier = 7090;
 
     // Setup wallets
     uint256 internal alicePk = uint256(0x01);
@@ -63,9 +34,14 @@ contract ERC721Test is Test {
     address internal emily = address(0x05);
 
     function setUp() public {
-        forward = new Forward();
+        vm.createSelectFork("mainnet");
+        vm.warp(block.timestamp + 60);
 
-        WETH = IWETH(address(forward.WETH()));
+        oracle = new ReservoirPriceOracle(
+            0x32dA57E736E05f75aa4FaE2E9Be60FD904492726
+        );
+        forward = new Forward(address(oracle));
+        weth = IWETH(address(forward.WETH()));
 
         // Grant some ETH to all wallets
         vm.deal(alice, 100 ether);
@@ -77,50 +53,18 @@ contract ERC721Test is Test {
 
     // Helper methods
 
-    function generateRoyalties(uint256 count, uint256 seed)
-        internal
-        pure
-        returns (
-            address[] memory recipients,
-            uint256[] memory bps,
-            uint256 totalBps
-        )
-    {
-        recipients = new address[](count);
-        bps = new uint256[](count);
-
-        for (uint256 i = 0; i < count; i++) {
-            // Generate "pseudo-random" royalty recipient and bps
-            recipients[i] = address(uint160((seed + i + 1) * 9999));
-            bps[i] = (i + 1) * 50;
-
-            totalBps += bps[i];
-        }
-    }
-
     function generateForwardBid(
         uint256 makerPk,
+        address token,
         uint256 identifierOrCriteria,
-        uint96 unitPrice,
-        uint128 amount,
-        address[] memory royaltyRecipients,
-        uint256[] memory royaltyBps
-    )
-        internal
-        returns (
-            NFT nft,
-            Forward.Order memory order,
-            bytes memory signature
-        )
-    {
-        nft = new NFT(royaltyRecipients, royaltyBps);
-
+        uint256 unitPrice
+    ) internal returns (Forward.Order memory order, bytes memory signature) {
         address maker = vm.addr(makerPk);
 
-        // Setup vault together with balances/approvals
+        // Prepare balance and approval
         vm.startPrank(maker);
-        WETH.deposit{value: unitPrice * amount}();
-        WETH.approve(address(forward), unitPrice * amount);
+        weth.deposit{value: unitPrice}();
+        weth.approve(address(forward), unitPrice);
         vm.stopPrank();
 
         // Generate bid
@@ -130,10 +74,10 @@ contract ERC721Test is Test {
                 ? Forward.ItemKind.ERC721
                 : Forward.ItemKind.ERC721_WITH_CRITERIA,
             maker: maker,
-            token: address(nft),
+            token: token,
             identifierOrCriteria: identifierOrCriteria,
             unitPrice: unitPrice,
-            amount: amount,
+            amount: 1,
             salt: 0,
             expiration: block.timestamp + 1
         });
@@ -154,21 +98,28 @@ contract ERC721Test is Test {
 
     function generateSeaportListing(
         uint256 makerPk,
-        NFT nft,
+        address token,
         uint256 identifier,
         uint256 unitPrice
     ) internal returns (ISeaport.Order memory order) {
         address maker = vm.addr(makerPk);
 
         // Fetch the item's royalties
-        (address[] memory royaltyRecipients, uint256[] memory royaltyBps) = nft
-            .getRoyalties(identifier);
-        uint256 royaltiesCount = royaltyBps.length;
+        (
+            address[] memory royaltyRecipients,
+            uint256[] memory royaltyAmounts
+        ) = forward.royaltyEngine().getRoyaltyView(
+                token,
+                identifier,
+                unitPrice
+            );
+
+        uint256 royaltiesLength = royaltyRecipients.length;
 
         // Compute the total royalty bps
-        uint256 totalRoyaltyBps;
-        for (uint256 i = 0; i < royaltiesCount; i++) {
-            totalRoyaltyBps += royaltyBps[i];
+        uint256 totalRoyaltyAmount;
+        for (uint256 i = 0; i < royaltiesLength; i++) {
+            totalRoyaltyAmount += royaltyAmounts[i];
         }
 
         // Create Seaport listing
@@ -177,7 +128,7 @@ contract ERC721Test is Test {
         // parameters.zone = address(0);
         parameters.offer = new ISeaport.OfferItem[](1);
         parameters.consideration = new ISeaport.ConsiderationItem[](
-            1 + royaltiesCount
+            1 + royaltiesLength
         );
         parameters.orderType = ISeaport.OrderType.PARTIAL_OPEN;
         parameters.startTime = block.timestamp;
@@ -185,12 +136,12 @@ contract ERC721Test is Test {
         // parameters.zoneHash = bytes32(0);
         // parameters.salt = 0;
         parameters.conduitKey = forward.seaportConduitKey();
-        parameters.totalOriginalConsiderationItems = 1 + royaltiesCount;
+        parameters.totalOriginalConsiderationItems = 1 + royaltiesLength;
 
-        // Populate the listing' offer items
+        // Populate the listing's offer items
         parameters.offer[0] = ISeaport.OfferItem(
             ISeaport.ItemType.ERC721,
-            address(nft),
+            token,
             identifier,
             1,
             1
@@ -201,22 +152,20 @@ contract ERC721Test is Test {
             ISeaport.ItemType.NATIVE,
             address(0),
             0,
-            (unitPrice * (10000 - totalRoyaltyBps)) / 10000,
-            (unitPrice * (10000 - totalRoyaltyBps)) / 10000,
-            parameters.offerer
+            unitPrice - totalRoyaltyAmount,
+            unitPrice - totalRoyaltyAmount,
+            maker
         );
-        for (uint256 i = 0; i < royaltiesCount; i++) {
+        for (uint256 i = 0; i < royaltiesLength; i++) {
             parameters.consideration[i + 1] = ISeaport.ConsiderationItem(
                 ISeaport.ItemType.NATIVE,
                 address(0),
                 0,
-                (unitPrice * royaltyBps[i]) / 10000,
-                (unitPrice * royaltyBps[i]) / 10000,
+                royaltyAmounts[i],
+                royaltyAmounts[i],
                 royaltyRecipients[i]
             );
         }
-
-        // Sign listing
 
         ISeaport.OrderComponents memory components = ISeaport.OrderComponents(
             parameters.offerer,
@@ -232,8 +181,9 @@ contract ERC721Test is Test {
             0
         );
 
+        // Sign the listing
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(
-            alicePk,
+            makerPk,
             keccak256(
                 abi.encodePacked(
                     hex"1901",
@@ -255,13 +205,42 @@ contract ERC721Test is Test {
             );
         }
 
+        string[] memory args = new string[](3);
+        args[0] = "bash";
+        args[1] = "-c";
+        args[
+            2
+        ] = "curl -s https://api.reservoir.tools/oracle/collections/floor-ask/v4?token=0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d:7090&kind=spot&twapSeconds=0";
+
+        string memory rawOracleResponse = string(vm.ffi(args));
+        ReservoirOracle.Message memory message = ReservoirOracle.Message({
+            id: abi.decode(
+                rawOracleResponse.parseRaw(".message.id"),
+                (bytes32)
+            ),
+            payload: abi.decode(
+                rawOracleResponse.parseRaw(".message.payload"),
+                (bytes)
+            ),
+            timestamp: abi.decode(
+                rawOracleResponse.parseRaw(".message.timestamp"),
+                (uint256)
+            ),
+            signature: abi.decode(
+                rawOracleResponse.parseRaw(".message.signature"),
+                (bytes)
+            )
+        });
+
         order.parameters = parameters;
-        // Encode the listing data in the EIP1271 order signature
+        // We encode the following in the EIP1271 signature:
+        // - compacted listing data
+        // - actual order signature
+        // - oracle price message
         order.signature = abi.encode(
             Forward.SeaportListingDetails({
-                maker: maker,
                 itemType: ISeaport.ItemType.ERC721,
-                token: address(nft),
+                token: token,
                 identifier: identifier,
                 amount: 1,
                 startTime: parameters.startTime,
@@ -269,38 +248,40 @@ contract ERC721Test is Test {
                 salt: parameters.salt,
                 payments: payments
             }),
-            signature
+            signature,
+            abi.encode(message)
         );
+    }
+
+    function getTotalRoyaltyAmount(
+        address token,
+        uint256 identifier,
+        uint256 price
+    ) internal view returns (uint256) {
+        (, uint256[] memory royaltyAmounts) = forward
+            .royaltyEngine()
+            .getRoyaltyView(token, identifier, price);
+
+        uint256 totalRoyaltyAmount;
+        for (uint256 i = 0; i < royaltyAmounts.length; i++) {
+            totalRoyaltyAmount += royaltyAmounts[i];
+        }
+
+        return totalRoyaltyAmount;
     }
 
     // Tests
 
     function testFillSingleTokenBid() public {
-        uint256 identifier = 1;
-        uint96 unitPrice = 1 ether;
+        uint256 unitPrice = 1 ether;
         (
-            address[] memory royaltyRecipients,
-            uint256[] memory royaltyBps,
-            uint256 totalBps
-        ) = generateRoyalties(3, 0);
-
-        (
-            NFT nft,
             Forward.Order memory order,
             bytes memory signature
-        ) = generateForwardBid(
-                alicePk,
-                identifier,
-                unitPrice,
-                1,
-                royaltyRecipients,
-                royaltyBps
-            );
+        ) = generateForwardBid(alicePk, bayc, baycIdentifier, unitPrice);
 
         // Fill bid
-        vm.startPrank(bob);
-        nft.mint(identifier);
-        nft.setApprovalForAll(address(forward), true);
+        vm.startPrank(baycOwner);
+        ERC721(bayc).setApprovalForAll(address(forward), true);
         forward.fillBid(
             Forward.FillDetails({
                 order: order,
@@ -311,20 +292,19 @@ contract ERC721Test is Test {
         vm.stopPrank();
 
         // Ensure the taker got the payment from the bid
-        require(WETH.balanceOf(bob) == unitPrice);
+        require(weth.balanceOf(baycOwner) == unitPrice);
 
         // Ensure the token is now inside the protocol
-        require(nft.ownerOf(identifier) == address(forward));
+        require(ERC721(bayc).ownerOf(baycIdentifier) == address(forward));
 
-        (address owner, uint96 priceAcquiredAt) = forward.erc721Ownerships(
-            keccak256(abi.encode(address(nft), identifier))
+        address owner = forward.erc721Owners(
+            keccak256(abi.encode(bayc, baycIdentifier))
         );
         require(owner == alice);
-        require(priceAcquiredAt == unitPrice);
 
         // Cannot fill an order for which the fillable quantity got to zero
         vm.expectRevert(Forward.InsufficientAmountAvailable.selector);
-        vm.prank(bob);
+        vm.prank(baycOwner);
         forward.fillBid(
             Forward.FillDetails({
                 order: order,
@@ -340,38 +320,23 @@ contract ERC721Test is Test {
         bytes32[] memory identifiers = new bytes32[](4);
         identifiers[0] = keccak256(abi.encode(uint256(1)));
         identifiers[1] = keccak256(abi.encode(uint256(2)));
-        identifiers[2] = keccak256(abi.encode(uint256(3)));
+        identifiers[2] = keccak256(abi.encode(uint256(baycIdentifier)));
         identifiers[3] = keccak256(abi.encode(uint256(4)));
 
         uint256 criteria = uint256(merkle.getRoot(identifiers));
 
-        uint256 identifier = 1;
-        bytes32[] memory criteriaProof = merkle.getProof(identifiers, 0);
+        uint256 identifier = baycIdentifier;
+        bytes32[] memory criteriaProof = merkle.getProof(identifiers, 2);
 
-        uint96 unitPrice = 1 ether;
+        uint256 unitPrice = 1 ether;
         (
-            address[] memory royaltyRecipients,
-            uint256[] memory royaltyBps,
-            uint256 totalBps
-        ) = generateRoyalties(3, 0);
-
-        (
-            NFT nft,
             Forward.Order memory order,
             bytes memory signature
-        ) = generateForwardBid(
-                alicePk,
-                criteria,
-                unitPrice,
-                1,
-                royaltyRecipients,
-                royaltyBps
-            );
+        ) = generateForwardBid(alicePk, bayc, criteria, unitPrice);
 
         // Fill bid
-        vm.startPrank(bob);
-        nft.mint(identifier);
-        nft.setApprovalForAll(address(forward), true);
+        vm.startPrank(baycOwner);
+        ERC721(bayc).setApprovalForAll(address(forward), true);
         forward.fillBidWithCriteria(
             Forward.FillDetails({
                 order: order,
@@ -384,86 +349,70 @@ contract ERC721Test is Test {
         vm.stopPrank();
 
         // Ensure the taker got the payment from the bid
-        require(WETH.balanceOf(bob) == unitPrice);
+        require(weth.balanceOf(baycOwner) == unitPrice);
 
         // Ensure the token is now inside the protocol
-        require(nft.ownerOf(identifier) == address(forward));
+        require(ERC721(bayc).ownerOf(identifier) == address(forward));
 
-        (address owner, uint96 priceAcquiredAt) = forward.erc721Ownerships(
-            keccak256(abi.encode(address(nft), identifier))
+        address owner = forward.erc721Owners(
+            keccak256(abi.encode(bayc, identifier))
         );
         require(owner == alice);
-        require(priceAcquiredAt == unitPrice);
     }
 
     function testListingWithinTheProtocol() public {
-        uint256 identifier = 1;
-        uint96 bidUnitPrice = 1 ether;
-        (
-            address[] memory royaltyRecipients,
-            uint256[] memory royaltyBps,
-            uint256 totalBps
-        ) = generateRoyalties(3, 0);
+        vm.prank(baycOwner);
+        ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
 
+        uint256 bidUnitPrice = 1 ether;
         (
-            NFT nft,
-            Forward.Bid memory bid,
+            Forward.Order memory forwardOrder,
             bytes memory signature
-        ) = generateForwardBid(
-                alicePk,
-                identifier,
-                bidUnitPrice,
-                1,
-                royaltyRecipients,
-                royaltyBps
-            );
+        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice);
 
         // Fill bid
         vm.startPrank(bob);
-        nft.mint(identifier);
-        nft.setApprovalForAll(address(forward), true);
-        forward.fill(
+        ERC721(bayc).setApprovalForAll(address(forward), true);
+        forward.fillBid(
             Forward.FillDetails({
-                order: order,
+                order: forwardOrder,
                 signature: signature,
                 fillAmount: 1
             })
         );
         vm.stopPrank();
 
-        uint256 listingPrice = 1.5 ether;
-        ISeaport.Order memory order = generateSeaportListing(
+        uint256 listingPrice = 70 ether;
+        ISeaport.Order memory seaportOrder = generateSeaportListing(
             alicePk,
-            nft,
-            identifier,
+            bayc,
+            baycIdentifier,
             listingPrice
         );
 
+        uint256 aliceETHBalanceBefore = alice.balance;
+
         // Fill listing
         vm.startPrank(carol);
-        vault.SEAPORT().fulfillOrder{value: listingPrice}(order, bytes32(0));
+        forward.SEAPORT().fulfillOrder{value: listingPrice}(
+            seaportOrder,
+            bytes32(0)
+        );
         vm.stopPrank();
 
-        uint256 makerWETHBalanceBefore = WETH.balanceOf(alice);
+        uint256 aliceETHBalanceAfter = alice.balance;
 
-        // Unlock royalties
-        vm.prank(alice);
-        vault.unlockERC721(nft, identifier);
+        // Fetch the royalties to be paid on the listing
+        uint256 totalRoyaltyAmount = getTotalRoyaltyAmount(
+            bayc,
+            baycIdentifier,
+            listingPrice
+        );
 
-        uint256 makerWETHBalanceAfter = WETH.balanceOf(alice);
-
-        // Ensure the royalties got unlocked from the vault
-        require(WETH.balanceOf(address(vault)) == 0);
-
-        // Ensure no royalties got paid
-        for (uint256 i = 0; i < royaltyBps.length; i++) {
-            require(WETH.balanceOf(royaltyRecipients[i]) == 0);
-        }
-
-        // Ensure the maker got the locked royalties refunded
+        // Ensure the taker got the payment from the listing
         require(
-            makerWETHBalanceAfter - makerWETHBalanceBefore ==
-                (bidUnitPrice * totalBps) / 10000
+            aliceETHBalanceAfter - aliceETHBalanceBefore ==
+                listingPrice - totalRoyaltyAmount
         );
     }
 
