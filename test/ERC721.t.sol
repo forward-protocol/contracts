@@ -546,7 +546,7 @@ contract ERC721Test is Test {
         vm.stopPrank();
     }
 
-    function testForceWithdraw() external {
+    function testWithdraw() external {
         Forward.ERC721Item[] memory items = new Forward.ERC721Item[](1);
         items[0] = Forward.ERC721Item({
             token: ERC721(bayc),
