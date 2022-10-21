@@ -12,8 +12,9 @@ import {IRoyaltyEngine} from "./interfaces/IRoyaltyEngine.sol";
 import {IConduitController, ISeaport} from "./interfaces/ISeaport.sol";
 
 // TODO:
-// - buy with royalties included (pay royalties relative to the listing's price)
 // - blacklist
+// - decide on handling ERC1155 tokens (which are hackable due do Seaport
+//   filling not able to decrease internal balance)
 
 contract Forward is Ownable, ReentrancyGuard {
     // Enums
