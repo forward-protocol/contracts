@@ -12,8 +12,6 @@ import {ReservoirPriceOracle} from "../src/ReservoirPriceOracle.sol";
 import {ISeaport} from "../src/interfaces/ISeaport.sol";
 import {IWETH} from "../src/interfaces/IWETH.sol";
 
-import "forge-std/console.sol";
-
 contract ERC721Test is Test {
     using stdJson for string;
 
@@ -89,7 +87,8 @@ contract ERC721Test is Test {
         uint256 makerPk,
         address token,
         uint256 identifierOrCriteria,
-        uint256 unitPrice
+        uint256 unitPrice,
+        uint128 amount
     ) internal returns (Forward.Order memory order, bytes memory signature) {
         address maker = vm.addr(makerPk);
 
@@ -102,14 +101,14 @@ contract ERC721Test is Test {
         // Generate bid
         order = Forward.Order({
             orderKind: Forward.OrderKind.BID,
-            itemKind: identifierOrCriteria < 10000
+            itemKind: identifierOrCriteria > 0 && identifierOrCriteria < 10000
                 ? Forward.ItemKind.ERC721
-                : Forward.ItemKind.ERC721_WITH_CRITERIA,
+                : Forward.ItemKind.ERC721_CRITERIA_OR_EXTERNAL,
             maker: maker,
             token: token,
             identifierOrCriteria: identifierOrCriteria,
             unitPrice: unitPrice,
-            amount: 1,
+            amount: amount,
             salt: 0,
             expiration: block.timestamp + 1
         });
@@ -317,7 +316,7 @@ contract ERC721Test is Test {
         (
             Forward.Order memory order,
             bytes memory signature
-        ) = generateForwardBid(alicePk, bayc, baycIdentifier, unitPrice);
+        ) = generateForwardBid(alicePk, bayc, baycIdentifier, unitPrice, 1);
 
         // Fill bid
         vm.startPrank(baycOwner);
@@ -371,7 +370,7 @@ contract ERC721Test is Test {
         (
             Forward.Order memory order,
             bytes memory signature
-        ) = generateForwardBid(alicePk, bayc, criteria, unitPrice);
+        ) = generateForwardBid(alicePk, bayc, criteria, unitPrice, 1);
 
         // Fill bid
         vm.startPrank(baycOwner);
@@ -400,6 +399,48 @@ contract ERC721Test is Test {
         require(owner == alice);
     }
 
+    function testPartialBidFilling() external {
+        uint256 unitPrice = 1 ether;
+        (
+            Forward.Order memory order,
+            bytes memory signature
+        ) = generateForwardBid(alicePk, bayc, 0, unitPrice, 1);
+
+        // Fill bid
+        vm.startPrank(baycOwner);
+        ERC721(bayc).setApprovalForAll(address(forward), true);
+        forward.fillBidWithCriteria(
+            Forward.FillDetails({
+                order: order,
+                signature: signature,
+                fillAmount: 1
+            }),
+            baycIdentifier,
+            new bytes32[](0)
+        );
+        vm.stopPrank();
+
+        // Check the order's status
+        (, uint128 filledAmount) = forward.orderStatuses(
+            forward.getOrderHash(order)
+        );
+        require(filledAmount == 1);
+
+        // Filling will fail if the order is already filled
+        vm.startPrank(baycOwner);
+        vm.expectRevert(Forward.InsufficientAmountAvailable.selector);
+        forward.fillBidWithCriteria(
+            Forward.FillDetails({
+                order: order,
+                signature: signature,
+                fillAmount: 1
+            }),
+            baycIdentifier,
+            new bytes32[](0)
+        );
+        vm.stopPrank();
+    }
+
     function testFillInternalListing() public {
         vm.prank(baycOwner);
         ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
@@ -408,7 +449,7 @@ contract ERC721Test is Test {
         (
             Forward.Order memory bid,
             bytes memory bidSignature
-        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice);
+        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice, 1);
 
         // Fill bid
         vm.startPrank(bob);
@@ -471,7 +512,7 @@ contract ERC721Test is Test {
         (
             Forward.Order memory forwardOrder,
             bytes memory signature
-        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice);
+        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice, 1);
 
         // Fill bid
         vm.startPrank(bob);
@@ -527,7 +568,7 @@ contract ERC721Test is Test {
         (
             Forward.Order memory forwardOrder,
             bytes memory signature
-        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice);
+        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice, 1);
 
         vm.prank(alice);
         forward.incrementCounter();
@@ -554,7 +595,7 @@ contract ERC721Test is Test {
         (
             Forward.Order memory forwardOrder,
             bytes memory signature
-        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice);
+        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice, 1);
 
         Forward.Order[] memory ordersToCancel = new Forward.Order[](1);
         ordersToCancel[0] = forwardOrder;

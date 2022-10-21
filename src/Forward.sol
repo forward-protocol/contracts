@@ -11,14 +11,18 @@ import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
 import {IRoyaltyEngine} from "./interfaces/IRoyaltyEngine.sol";
 import {IConduitController, ISeaport} from "./interfaces/ISeaport.sol";
 
+// TODO:
+// - buy with royalties included (pay royalties relative to the listing's price)
+// - blacklist
+
 contract Forward is Ownable, ReentrancyGuard {
     // Enums
 
     enum ItemKind {
         ERC721,
         ERC1155,
-        ERC721_WITH_CRITERIA,
-        ERC1155_WITH_CRITERIA
+        ERC721_CRITERIA_OR_EXTERNAL,
+        ERC1155_CRITERIA_OR_EXTERNAL
     }
 
     enum OrderKind {
@@ -282,8 +286,8 @@ contract Forward is Ownable, ReentrancyGuard {
         // Ensure the order is criteria-based
         ItemKind itemKind = details.order.itemKind;
         if (
-            itemKind != ItemKind.ERC721_WITH_CRITERIA &&
-            itemKind != ItemKind.ERC1155_WITH_CRITERIA
+            itemKind != ItemKind.ERC721_CRITERIA_OR_EXTERNAL &&
+            itemKind != ItemKind.ERC1155_CRITERIA_OR_EXTERNAL
         ) {
             revert OrderIsInvalid();
         }
@@ -805,10 +809,7 @@ contract Forward is Ownable, ReentrancyGuard {
             order.unitPrice * details.fillAmount
         );
 
-        if (
-            order.itemKind == ItemKind.ERC721 ||
-            order.itemKind == ItemKind.ERC721_WITH_CRITERIA
-        ) {
+        if (uint8(order.itemKind) % 2 == 0) {
             // Ensure ERC721 orders have a fill amount of 1
             if (details.fillAmount != 1) {
                 revert InvalidFillAmount();
@@ -915,14 +916,28 @@ contract Forward is Ownable, ReentrancyGuard {
         _sendPayment(order.maker, order.unitPrice * fillAmount);
 
         uint256 identifier = order.identifierOrCriteria;
-        if (order.itemKind == ItemKind.ERC721) {
+        if (uint8(order.itemKind) % 2 == 0) {
             // Ensure ERC721 orders have a fill amount of 1
             if (fillAmount != 1) {
                 revert InvalidFillAmount();
             }
 
-            // Update the internal ownership status
             bytes32 itemId = keccak256(abi.encode(token, identifier));
+            if (order.itemKind == ItemKind.ERC721) {
+                // Ensure the maker internally owns the token
+                if (erc721Owners[itemId] != maker) {
+                    revert Unauthorized();
+                }
+            } else {
+                // Transfer the token in
+                IERC721(token).safeTransferFrom(
+                    maker,
+                    address(this),
+                    identifier
+                );
+            }
+
+            // Update the internal ownership status
             erc721Owners[itemId] = msg.sender;
         } else {
             // Ensure ERC1155 orders have a fill amount of at least 1
@@ -930,11 +945,24 @@ contract Forward is Ownable, ReentrancyGuard {
                 revert InvalidFillAmount();
             }
 
-            // Update the internal ownership status
-            bytes32 makerItemId = keccak256(
-                abi.encode(token, identifier, maker)
-            );
-            erc1155Amounts[makerItemId] -= fillAmount;
+            if (order.itemKind == ItemKind.ERC1155) {
+                // Subtract the filled amount from the maker's internal balance
+                bytes32 makerItemId = keccak256(
+                    abi.encode(token, identifier, maker)
+                );
+                erc1155Amounts[makerItemId] -= fillAmount;
+            } else {
+                // Transfer the tokens in
+                IERC1155(token).safeTransferFrom(
+                    maker,
+                    address(this),
+                    identifier,
+                    fillAmount,
+                    ""
+                );
+            }
+
+            // Update the internal ownership statuses
             bytes32 takerItemId = keccak256(
                 abi.encode(token, identifier, msg.sender)
             );
