@@ -310,12 +310,6 @@ contract Forward is Ownable, ReentrancyGuard {
         payable
         nonReentrant
     {
-        // Ensure the order is non-criteria-based
-        ItemKind itemKind = details.order.itemKind;
-        if (itemKind != ItemKind.ERC721 && itemKind != ItemKind.ERC1155) {
-            revert OrderIsInvalid();
-        }
-
         _fillListing(details);
     }
 

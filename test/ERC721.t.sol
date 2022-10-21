@@ -127,7 +127,7 @@ contract ERC721Test is Test {
         signature = abi.encodePacked(r, s, v);
     }
 
-    function generateForwardListing(
+    function generateForwardInternalListing(
         uint256 makerPk,
         address token,
         uint256 identifier,
@@ -162,7 +162,47 @@ contract ERC721Test is Test {
         signature = abi.encodePacked(r, s, v);
     }
 
-    function generateSeaportListing(
+    function generateForwardExternalListing(
+        uint256 makerPk,
+        address token,
+        uint256 identifier,
+        uint256 unitPrice
+    ) internal returns (Forward.Order memory order, bytes memory signature) {
+        address maker = vm.addr(makerPk);
+
+        // Approve the exchange
+        vm.startPrank(maker);
+        ERC721(token).setApprovalForAll(address(forward), true);
+        vm.stopPrank();
+
+        // Generate listing
+        order = Forward.Order({
+            orderKind: Forward.OrderKind.LISTING,
+            itemKind: Forward.ItemKind.ERC721_CRITERIA_OR_EXTERNAL,
+            maker: maker,
+            token: token,
+            identifierOrCriteria: identifier,
+            unitPrice: unitPrice,
+            amount: 1,
+            salt: 0,
+            expiration: block.timestamp + 1
+        });
+
+        // Sign listing
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(
+            makerPk,
+            keccak256(
+                abi.encodePacked(
+                    hex"1901",
+                    forward.DOMAIN_SEPARATOR(),
+                    forward.getOrderHash(order)
+                )
+            )
+        );
+        signature = abi.encodePacked(r, s, v);
+    }
+
+    function generateSeaportExternalListing(
         uint256 makerPk,
         address token,
         uint256 identifier,
@@ -441,7 +481,7 @@ contract ERC721Test is Test {
         vm.stopPrank();
     }
 
-    function testFillInternalListing() public {
+    function testFillForwardInternalListing() public {
         vm.prank(baycOwner);
         ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
 
@@ -467,7 +507,7 @@ contract ERC721Test is Test {
         (
             Forward.Order memory listing,
             bytes memory listingSignature
-        ) = generateForwardListing(
+        ) = generateForwardInternalListing(
                 alicePk,
                 bayc,
                 baycIdentifier,
@@ -504,7 +544,52 @@ contract ERC721Test is Test {
         require(owner == carol);
     }
 
-    function testFillExternalListing() public {
+    function testFillForwardExternalListing() public {
+        vm.prank(baycOwner);
+        ERC721(bayc).transferFrom(baycOwner, alice, baycIdentifier);
+
+        uint256 listingUnitPrice = 1.5 ether;
+        (
+            Forward.Order memory listing,
+            bytes memory listingSignature
+        ) = generateForwardExternalListing(
+                alicePk,
+                bayc,
+                baycIdentifier,
+                listingUnitPrice
+            );
+
+        uint256 aliceETHBalanceBefore = alice.balance;
+
+        // Fill listing
+        vm.startPrank(carol);
+        forward.fillListing{value: listingUnitPrice}(
+            Forward.FillDetails({
+                order: listing,
+                signature: listingSignature,
+                fillAmount: 1
+            })
+        );
+        vm.stopPrank();
+
+        uint256 aliceETHBalanceAfter = alice.balance;
+
+        // Ensure the maker got the payment from the listing
+        require(
+            aliceETHBalanceAfter - aliceETHBalanceBefore == listingUnitPrice
+        );
+
+        // Ensure the token is now inside the protocol
+        require(ERC721(bayc).ownerOf(baycIdentifier) == address(forward));
+
+        // Ensure the token is owned by the taker inside the protocol
+        address owner = forward.erc721Owners(
+            keccak256(abi.encode(bayc, baycIdentifier))
+        );
+        require(owner == carol);
+    }
+
+    function testFillSeaportExternalListing() public {
         vm.prank(baycOwner);
         ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
 
@@ -527,7 +612,7 @@ contract ERC721Test is Test {
         vm.stopPrank();
 
         uint256 listingPrice = 70 ether;
-        ISeaport.Order memory seaportOrder = generateSeaportListing(
+        ISeaport.Order memory seaportOrder = generateSeaportExternalListing(
             alicePk,
             bayc,
             baycIdentifier,
