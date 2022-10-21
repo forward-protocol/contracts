@@ -489,7 +489,7 @@ contract Forward is Ownable, ReentrancyGuard {
                 // Pay the royalties
                 uint256 recipientsLength = royaltyRecipients.length;
                 for (uint256 j = 0; j < recipientsLength; ) {
-                    _sendPayment(royaltyRecipients[i], royaltyAmounts[i]);
+                    _sendPayment(royaltyRecipients[j], royaltyAmounts[j]);
 
                     unchecked {
                         ++j;
@@ -563,7 +563,7 @@ contract Forward is Ownable, ReentrancyGuard {
                 // Pay the royalties
                 uint256 recipientsLength = royaltyRecipients.length;
                 for (uint256 j = 0; j < recipientsLength; ) {
-                    _sendPayment(royaltyRecipients[i], royaltyAmounts[i]);
+                    _sendPayment(royaltyRecipients[j], royaltyAmounts[j]);
 
                     unchecked {
                         ++j;
