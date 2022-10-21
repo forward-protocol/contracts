@@ -270,8 +270,7 @@ contract Forward is Ownable, ReentrancyGuard {
 
     function fillBid(FillDetails calldata details) external nonReentrant {
         // Ensure the order is non-criteria-based
-        ItemKind itemKind = details.order.itemKind;
-        if (itemKind != ItemKind.ERC721 && itemKind != ItemKind.ERC1155) {
+        if (uint8(details.order.itemKind) > 1) {
             revert OrderIsInvalid();
         }
 
@@ -284,11 +283,7 @@ contract Forward is Ownable, ReentrancyGuard {
         bytes32[] calldata criteriaProof
     ) external nonReentrant {
         // Ensure the order is criteria-based
-        ItemKind itemKind = details.order.itemKind;
-        if (
-            itemKind != ItemKind.ERC721_CRITERIA_OR_EXTERNAL &&
-            itemKind != ItemKind.ERC1155_CRITERIA_OR_EXTERNAL
-        ) {
+        if (uint8(details.order.itemKind) < 2) {
             revert OrderIsInvalid();
         }
 
@@ -311,6 +306,54 @@ contract Forward is Ownable, ReentrancyGuard {
         nonReentrant
     {
         _fillListing(details);
+    }
+
+    function fillListingWithWithdraw(FillDetails calldata details)
+        external
+        payable
+        nonReentrant
+    {
+        _fillListing(details);
+
+        address token = details.order.token;
+        uint256 identifier = details.order.identifierOrCriteria;
+        uint256 fillAmount = details.fillAmount;
+
+        // Fetch the item's royalties (relative to the listing's price)
+        (
+            address[] memory royaltyRecipients,
+            uint256[] memory royaltyAmounts
+        ) = royaltyEngine.getRoyaltyView(
+                address(token),
+                identifier,
+                details.order.unitPrice * fillAmount
+            );
+
+        // Pay the royalties
+        uint256 recipientsLength = royaltyRecipients.length;
+        for (uint256 i = 0; i < recipientsLength; ) {
+            _sendPayment(royaltyRecipients[i], royaltyAmounts[i]);
+
+            unchecked {
+                ++i;
+            }
+        }
+
+        if (uint8(details.order.itemKind) % 2 == 0) {
+            IERC721(token).safeTransferFrom(
+                address(this),
+                msg.sender,
+                identifier
+            );
+        } else {
+            IERC1155(token).safeTransferFrom(
+                address(this),
+                msg.sender,
+                identifier,
+                fillAmount,
+                ""
+            );
+        }
     }
 
     function cancel(Order[] calldata orders) external {
