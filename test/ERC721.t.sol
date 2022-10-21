@@ -546,6 +546,36 @@ contract ERC721Test is Test {
         vm.stopPrank();
     }
 
+    function testCancel() external {
+        vm.prank(baycOwner);
+        ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
+
+        uint256 bidUnitPrice = 1 ether;
+        (
+            Forward.Order memory forwardOrder,
+            bytes memory signature
+        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice);
+
+        Forward.Order[] memory ordersToCancel = new Forward.Order[](1);
+        ordersToCancel[0] = forwardOrder;
+
+        vm.prank(alice);
+        forward.cancel(ordersToCancel);
+
+        // Cannot fill cancelled orders
+        vm.startPrank(bob);
+        ERC721(bayc).setApprovalForAll(address(forward), true);
+        vm.expectRevert(Forward.OrderIsCancelled.selector);
+        forward.fillBid(
+            Forward.FillDetails({
+                order: forwardOrder,
+                signature: signature,
+                fillAmount: 1
+            })
+        );
+        vm.stopPrank();
+    }
+
     function testWithdraw() external {
         Forward.ERC721Item[] memory items = new Forward.ERC721Item[](1);
         items[0] = Forward.ERC721Item({

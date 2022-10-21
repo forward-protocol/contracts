@@ -329,11 +329,11 @@ contract Forward is Ownable, ReentrancyGuard {
             bytes32 orderHash = getOrderHash(order);
             orderStatuses[orderHash].cancelled = true;
 
+            emit OrderCancelled(orderHash);
+
             unchecked {
                 ++i;
             }
-
-            emit OrderCancelled(orderHash);
         }
     }
 
@@ -784,10 +784,11 @@ contract Forward is Ownable, ReentrancyGuard {
         }
 
         // Ensure the maker's signature is valid
-        bytes32 eip712Hash = _getEIP712Hash(getOrderHash(order));
+        bytes32 orderHash = getOrderHash(order);
+        bytes32 eip712Hash = _getEIP712Hash(orderHash);
         _verifySignature(maker, eip712Hash, details.signature);
 
-        OrderStatus memory orderStatus = orderStatuses[eip712Hash];
+        OrderStatus memory orderStatus = orderStatuses[orderHash];
         // Ensure the order is not cancelled
         if (orderStatus.cancelled) {
             revert OrderIsCancelled();
@@ -864,10 +865,10 @@ contract Forward is Ownable, ReentrancyGuard {
         }
 
         // Update the order's filled amount
-        orderStatuses[eip712Hash].filledAmount += details.fillAmount;
+        orderStatuses[orderHash].filledAmount += details.fillAmount;
 
         emit OrderFilled(
-            eip712Hash,
+            orderHash,
             order.orderKind,
             maker,
             msg.sender,
@@ -896,10 +897,11 @@ contract Forward is Ownable, ReentrancyGuard {
         }
 
         // Ensure the maker's signature is valid
-        bytes32 eip712Hash = _getEIP712Hash(getOrderHash(order));
+        bytes32 orderHash = getOrderHash(order);
+        bytes32 eip712Hash = _getEIP712Hash(orderHash);
         _verifySignature(maker, eip712Hash, details.signature);
 
-        OrderStatus memory orderStatus = orderStatuses[eip712Hash];
+        OrderStatus memory orderStatus = orderStatuses[orderHash];
         // Ensure the order is not cancelled
         if (orderStatus.cancelled) {
             revert OrderIsCancelled();
@@ -940,10 +942,10 @@ contract Forward is Ownable, ReentrancyGuard {
         }
 
         // Update the order's filled amount
-        orderStatuses[eip712Hash].filledAmount += fillAmount;
+        orderStatuses[orderHash].filledAmount += fillAmount;
 
         emit OrderFilled(
-            eip712Hash,
+            orderHash,
             order.orderKind,
             maker,
             msg.sender,
