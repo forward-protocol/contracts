@@ -645,6 +645,60 @@ contract ERC721Test is Test {
         );
     }
 
+    function testFillForwardExternalListingWithWithdraw() public {
+        vm.prank(baycOwner);
+        ERC721(bayc).transferFrom(baycOwner, alice, baycIdentifier);
+
+        uint256 listingUnitPrice = 1 ether;
+        (
+            Forward.Order memory listing,
+            bytes memory listingSignature
+        ) = generateForwardExternalListing(
+                alicePk,
+                bayc,
+                baycIdentifier,
+                listingUnitPrice
+            );
+
+        uint256 aliceETHBalanceBefore = alice.balance;
+
+        // Fetch the royalties to be paid relative to the listing's price
+        uint256 totalRoyaltyAmount = getTotalRoyaltyAmount(
+            bayc,
+            baycIdentifier,
+            listingUnitPrice
+        );
+
+        // Fill listing
+        vm.startPrank(carol);
+        forward.fillListingWithWithdraw{
+            value: listingUnitPrice + totalRoyaltyAmount
+        }(
+            Forward.FillDetails({
+                order: listing,
+                signature: listingSignature,
+                fillAmount: 1
+            })
+        );
+        vm.stopPrank();
+
+        uint256 aliceETHBalanceAfter = alice.balance;
+
+        // Ensure the maker got the payment from the listing
+        require(
+            aliceETHBalanceAfter - aliceETHBalanceBefore == listingUnitPrice
+        );
+
+        // Ensure the token is outside the protocol
+        require(ERC721(bayc).ownerOf(baycIdentifier) == address(carol));
+
+        // Ensure the token is owned by the taker inside the protocol
+        address owner = forward.erc721Owners(
+            keccak256(abi.encode(bayc, baycIdentifier))
+        );
+        require(owner == carol);
+    }
+
     function testCounterIncrement() public {
         vm.prank(baycOwner);
         ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
