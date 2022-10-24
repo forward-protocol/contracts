@@ -740,7 +740,7 @@ contract ERC721Test is Test {
         vm.stopPrank();
     }
 
-    function testWithdraw() external {
+    function testDepositAndWithdraw() external {
         Forward.ERC721Item[] memory items = new Forward.ERC721Item[](1);
         items[0] = Forward.ERC721Item({
             token: ERC721(token),
@@ -762,18 +762,18 @@ contract ERC721Test is Test {
         forward.withdrawERC721s(items, data, tokenOwner);
         vm.stopPrank();
 
-        uint256 floorPrice = priceOracle.getPrice(
+        uint256 price = priceOracle.getPrice(
             token,
             tokenIdentifier,
             1 minutes,
             data[0]
         );
 
-        // Fetch the royalties to be paid relative to the collection's floor price
+        // Fetch the royalties to be paid relative to the token's price
         uint256 totalRoyaltyAmount = getTotalRoyaltyAmount(
             token,
             tokenIdentifier,
-            floorPrice
+            price
         );
 
         // Withdraw
@@ -787,5 +787,20 @@ contract ERC721Test is Test {
 
         // Ensure the token is now in the withdrawer's wallet
         require(ERC721(token).ownerOf(tokenIdentifier) == tokenOwner);
+    }
+
+    function testBlacklist() external {
+        // Blacklist
+        vm.prank(blacklist.owner());
+        blacklist.adminSetBlacklistStatus(token, true);
+
+        // Deposit will fail if the token is blacklisted
+        vm.prank(tokenOwner);
+        vm.expectRevert(Forward.Blacklisted.selector);
+        ERC721(token).safeTransferFrom(
+            tokenOwner,
+            address(forward),
+            tokenIdentifier
+        );
     }
 }
