@@ -25,9 +25,10 @@ contract ERC721Test is Test {
     Forward internal forward;
     IWETH internal weth;
 
-    address internal bayc = 0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D;
-    address internal baycOwner = 0x8AD272Ac86c6C88683d9a60eb8ED57E6C304bB0C;
-    uint256 internal baycIdentifier = 7090;
+    // Setup token with on-chain royalties
+    address internal token = 0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D;
+    address internal tokenOwner = 0x8AD272Ac86c6C88683d9a60eb8ED57E6C304bB0C;
+    uint256 internal tokenIdentifier = 7090;
 
     // Setup wallets
     uint256 internal alicePk = uint256(0x01);
@@ -67,7 +68,7 @@ contract ERC721Test is Test {
     // Helper methods
 
     function fetchOracleOffChainData() internal returns (bytes memory) {
-        // Fetch oracle message for the token's collection floor price
+        // Fetch oracle message for the token's price
         string[] memory args = new string[](3);
         args[0] = "bash";
         args[1] = "-c";
@@ -100,7 +101,7 @@ contract ERC721Test is Test {
 
     function generateForwardBid(
         uint256 makerPk,
-        address token,
+        address tokenAddress,
         uint256 identifierOrCriteria,
         uint256 unitPrice,
         uint128 amount
@@ -120,7 +121,7 @@ contract ERC721Test is Test {
                 ? Forward.ItemKind.ERC721
                 : Forward.ItemKind.ERC721_CRITERIA_OR_EXTERNAL,
             maker: maker,
-            token: token,
+            token: tokenAddress,
             identifierOrCriteria: identifierOrCriteria,
             unitPrice: unitPrice,
             amount: amount,
@@ -144,7 +145,7 @@ contract ERC721Test is Test {
 
     function generateForwardInternalListing(
         uint256 makerPk,
-        address token,
+        address tokenAddress,
         uint256 identifier,
         uint256 unitPrice
     ) internal returns (Forward.Order memory order, bytes memory signature) {
@@ -155,7 +156,7 @@ contract ERC721Test is Test {
             orderKind: Forward.OrderKind.LISTING,
             itemKind: Forward.ItemKind.ERC721,
             maker: maker,
-            token: token,
+            token: tokenAddress,
             identifierOrCriteria: identifier,
             unitPrice: unitPrice,
             amount: 1,
@@ -179,7 +180,7 @@ contract ERC721Test is Test {
 
     function generateForwardExternalListing(
         uint256 makerPk,
-        address token,
+        address tokenAddress,
         uint256 identifier,
         uint256 unitPrice
     ) internal returns (Forward.Order memory order, bytes memory signature) {
@@ -187,7 +188,7 @@ contract ERC721Test is Test {
 
         // Approve the exchange
         vm.startPrank(maker);
-        ERC721(token).setApprovalForAll(address(forward), true);
+        ERC721(tokenAddress).setApprovalForAll(address(forward), true);
         vm.stopPrank();
 
         // Generate listing
@@ -195,7 +196,7 @@ contract ERC721Test is Test {
             orderKind: Forward.OrderKind.LISTING,
             itemKind: Forward.ItemKind.ERC721_CRITERIA_OR_EXTERNAL,
             maker: maker,
-            token: token,
+            token: tokenAddress,
             identifierOrCriteria: identifier,
             unitPrice: unitPrice,
             amount: 1,
@@ -217,9 +218,9 @@ contract ERC721Test is Test {
         signature = abi.encodePacked(r, s, v);
     }
 
-    function generateSeaportExternalListing(
+    function generateSeaportListing(
         uint256 makerPk,
-        address token,
+        address tokenAddress,
         uint256 identifier,
         uint256 unitPrice
     ) internal returns (ISeaport.Order memory order) {
@@ -230,7 +231,7 @@ contract ERC721Test is Test {
             address[] memory royaltyRecipients,
             uint256[] memory royaltyAmounts
         ) = forward.royaltyEngine().getRoyaltyView(
-                token,
+                tokenAddress,
                 identifier,
                 unitPrice
             );
@@ -262,7 +263,7 @@ contract ERC721Test is Test {
         // Populate the listing's offer items
         parameters.offer[0] = ISeaport.OfferItem(
             ISeaport.ItemType.ERC721,
-            token,
+            tokenAddress,
             identifier,
             1,
             1
@@ -333,7 +334,7 @@ contract ERC721Test is Test {
         // - oracle pricing message
         order.signature = abi.encode(
             Forward.SeaportListingDetails({
-                token: token,
+                token: tokenAddress,
                 identifier: identifier,
                 startTime: parameters.startTime,
                 endTime: parameters.endTime,
@@ -346,13 +347,13 @@ contract ERC721Test is Test {
     }
 
     function getTotalRoyaltyAmount(
-        address token,
+        address tokenAddress,
         uint256 identifier,
         uint256 price
     ) internal view returns (uint256) {
         (, uint256[] memory royaltyAmounts) = forward
             .royaltyEngine()
-            .getRoyaltyView(token, identifier, price);
+            .getRoyaltyView(tokenAddress, identifier, price);
 
         uint256 totalRoyaltyAmount;
         for (uint256 i = 0; i < royaltyAmounts.length; i++) {
@@ -369,11 +370,11 @@ contract ERC721Test is Test {
         (
             Forward.Order memory order,
             bytes memory signature
-        ) = generateForwardBid(alicePk, bayc, baycIdentifier, unitPrice, 1);
+        ) = generateForwardBid(alicePk, token, tokenIdentifier, unitPrice, 1);
 
         // Fill bid
-        vm.startPrank(baycOwner);
-        ERC721(bayc).setApprovalForAll(address(forward), true);
+        vm.startPrank(tokenOwner);
+        ERC721(token).setApprovalForAll(address(forward), true);
         forward.fillBid(
             Forward.FillDetails({
                 order: order,
@@ -384,19 +385,19 @@ contract ERC721Test is Test {
         vm.stopPrank();
 
         // Ensure the taker got the payment from the bid
-        require(weth.balanceOf(baycOwner) == unitPrice);
+        require(weth.balanceOf(tokenOwner) == unitPrice);
 
         // Ensure the token is now inside the protocol
-        require(ERC721(bayc).ownerOf(baycIdentifier) == address(forward));
+        require(ERC721(token).ownerOf(tokenIdentifier) == address(forward));
 
         address owner = forward.erc721Owners(
-            keccak256(abi.encode(bayc, baycIdentifier))
+            keccak256(abi.encode(token, tokenIdentifier))
         );
         require(owner == alice);
 
         // Cannot fill an order for which the fillable quantity got to zero
         vm.expectRevert(Forward.InsufficientAmountAvailable.selector);
-        vm.prank(baycOwner);
+        vm.prank(tokenOwner);
         forward.fillBid(
             Forward.FillDetails({
                 order: order,
@@ -412,7 +413,7 @@ contract ERC721Test is Test {
         bytes32[] memory identifiers = new bytes32[](4);
         identifiers[0] = keccak256(abi.encode(uint256(1)));
         identifiers[1] = keccak256(abi.encode(uint256(2)));
-        identifiers[2] = keccak256(abi.encode(uint256(baycIdentifier)));
+        identifiers[2] = keccak256(abi.encode(uint256(tokenIdentifier)));
         identifiers[3] = keccak256(abi.encode(uint256(4)));
 
         uint256 criteria = uint256(merkle.getRoot(identifiers));
@@ -423,31 +424,31 @@ contract ERC721Test is Test {
         (
             Forward.Order memory order,
             bytes memory signature
-        ) = generateForwardBid(alicePk, bayc, criteria, unitPrice, 1);
+        ) = generateForwardBid(alicePk, token, criteria, unitPrice, 1);
 
         // Fill bid
-        vm.startPrank(baycOwner);
-        ERC721(bayc).setApprovalForAll(address(forward), true);
+        vm.startPrank(tokenOwner);
+        ERC721(token).setApprovalForAll(address(forward), true);
         forward.fillBidWithCriteria(
             Forward.FillDetails({
                 order: order,
                 signature: signature,
                 fillAmount: 1
             }),
-            baycIdentifier,
+            tokenIdentifier,
             criteriaProof
         );
         vm.stopPrank();
 
         // Ensure the taker got the payment from the bid
-        require(weth.balanceOf(baycOwner) == unitPrice);
+        require(weth.balanceOf(tokenOwner) == unitPrice);
 
         // Ensure the token is now inside the protocol
-        require(ERC721(bayc).ownerOf(baycIdentifier) == address(forward));
+        require(ERC721(token).ownerOf(tokenIdentifier) == address(forward));
 
         // Ensure the owner is owned by the maker inside the protocol
         address owner = forward.erc721Owners(
-            keccak256(abi.encode(bayc, baycIdentifier))
+            keccak256(abi.encode(token, tokenIdentifier))
         );
         require(owner == alice);
     }
@@ -457,18 +458,18 @@ contract ERC721Test is Test {
         (
             Forward.Order memory order,
             bytes memory signature
-        ) = generateForwardBid(alicePk, bayc, 0, unitPrice, 1);
+        ) = generateForwardBid(alicePk, token, 0, unitPrice, 1);
 
         // Fill bid
-        vm.startPrank(baycOwner);
-        ERC721(bayc).setApprovalForAll(address(forward), true);
+        vm.startPrank(tokenOwner);
+        ERC721(token).setApprovalForAll(address(forward), true);
         forward.fillBidWithCriteria(
             Forward.FillDetails({
                 order: order,
                 signature: signature,
                 fillAmount: 1
             }),
-            baycIdentifier,
+            tokenIdentifier,
             new bytes32[](0)
         );
         vm.stopPrank();
@@ -480,7 +481,7 @@ contract ERC721Test is Test {
         require(filledAmount == 1);
 
         // Filling will fail if the order is already filled
-        vm.startPrank(baycOwner);
+        vm.startPrank(tokenOwner);
         vm.expectRevert(Forward.InsufficientAmountAvailable.selector);
         forward.fillBidWithCriteria(
             Forward.FillDetails({
@@ -488,25 +489,31 @@ contract ERC721Test is Test {
                 signature: signature,
                 fillAmount: 1
             }),
-            baycIdentifier,
+            tokenIdentifier,
             new bytes32[](0)
         );
         vm.stopPrank();
     }
 
     function testFillForwardInternalListing() public {
-        vm.prank(baycOwner);
-        ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
+        vm.prank(tokenOwner);
+        ERC721(token).transferFrom(tokenOwner, bob, tokenIdentifier);
 
         uint256 bidUnitPrice = 1 ether;
         (
             Forward.Order memory bid,
             bytes memory bidSignature
-        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice, 1);
+        ) = generateForwardBid(
+                alicePk,
+                token,
+                tokenIdentifier,
+                bidUnitPrice,
+                1
+            );
 
         // Fill bid
         vm.startPrank(bob);
-        ERC721(bayc).setApprovalForAll(address(forward), true);
+        ERC721(token).setApprovalForAll(address(forward), true);
         forward.fillBid(
             Forward.FillDetails({
                 order: bid,
@@ -522,8 +529,8 @@ contract ERC721Test is Test {
             bytes memory listingSignature
         ) = generateForwardInternalListing(
                 alicePk,
-                bayc,
-                baycIdentifier,
+                token,
+                tokenIdentifier,
                 listingUnitPrice
             );
 
@@ -548,18 +555,18 @@ contract ERC721Test is Test {
         );
 
         // Ensure the token is still inside the protocol
-        require(ERC721(bayc).ownerOf(baycIdentifier) == address(forward));
+        require(ERC721(token).ownerOf(tokenIdentifier) == address(forward));
 
         // Ensure the owner is owned by the taker inside the protocol
         address owner = forward.erc721Owners(
-            keccak256(abi.encode(bayc, baycIdentifier))
+            keccak256(abi.encode(token, tokenIdentifier))
         );
         require(owner == carol);
     }
 
     function testFillForwardExternalListing() public {
-        vm.prank(baycOwner);
-        ERC721(bayc).transferFrom(baycOwner, alice, baycIdentifier);
+        vm.prank(tokenOwner);
+        ERC721(token).transferFrom(tokenOwner, alice, tokenIdentifier);
 
         uint256 listingUnitPrice = 1.5 ether;
         (
@@ -567,8 +574,8 @@ contract ERC721Test is Test {
             bytes memory listingSignature
         ) = generateForwardExternalListing(
                 alicePk,
-                bayc,
-                baycIdentifier,
+                token,
+                tokenIdentifier,
                 listingUnitPrice
             );
 
@@ -593,28 +600,34 @@ contract ERC721Test is Test {
         );
 
         // Ensure the token is now inside the protocol
-        require(ERC721(bayc).ownerOf(baycIdentifier) == address(forward));
+        require(ERC721(token).ownerOf(tokenIdentifier) == address(forward));
 
         // Ensure the token is owned by the taker inside the protocol
         address owner = forward.erc721Owners(
-            keccak256(abi.encode(bayc, baycIdentifier))
+            keccak256(abi.encode(token, tokenIdentifier))
         );
         require(owner == carol);
     }
 
-    function testFillSeaportExternalListing() public {
-        vm.prank(baycOwner);
-        ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
+    function testFillSeaportListing() public {
+        vm.prank(tokenOwner);
+        ERC721(token).transferFrom(tokenOwner, bob, tokenIdentifier);
 
         uint256 bidUnitPrice = 1 ether;
         (
             Forward.Order memory forwardOrder,
             bytes memory signature
-        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice, 1);
+        ) = generateForwardBid(
+                alicePk,
+                token,
+                tokenIdentifier,
+                bidUnitPrice,
+                1
+            );
 
         // Fill bid
         vm.startPrank(bob);
-        ERC721(bayc).setApprovalForAll(address(forward), true);
+        ERC721(token).setApprovalForAll(address(forward), true);
         forward.fillBid(
             Forward.FillDetails({
                 order: forwardOrder,
@@ -625,10 +638,10 @@ contract ERC721Test is Test {
         vm.stopPrank();
 
         uint256 listingPrice = 70 ether;
-        ISeaport.Order memory seaportOrder = generateSeaportExternalListing(
+        ISeaport.Order memory seaportOrder = generateSeaportListing(
             alicePk,
-            bayc,
-            baycIdentifier,
+            token,
+            tokenIdentifier,
             listingPrice
         );
 
@@ -646,8 +659,8 @@ contract ERC721Test is Test {
 
         // Fetch the royalties to be paid relative to the listing's price
         uint256 totalRoyaltyAmount = getTotalRoyaltyAmount(
-            bayc,
-            baycIdentifier,
+            token,
+            tokenIdentifier,
             listingPrice
         );
 
@@ -659,21 +672,27 @@ contract ERC721Test is Test {
     }
 
     function testCounterIncrement() public {
-        vm.prank(baycOwner);
-        ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
+        vm.prank(tokenOwner);
+        ERC721(token).transferFrom(tokenOwner, bob, tokenIdentifier);
 
         uint256 bidUnitPrice = 1 ether;
         (
             Forward.Order memory forwardOrder,
             bytes memory signature
-        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice, 1);
+        ) = generateForwardBid(
+                alicePk,
+                token,
+                tokenIdentifier,
+                bidUnitPrice,
+                1
+            );
 
         vm.prank(alice);
         forward.incrementCounter();
 
         // Incrementing the counter invalidates any previously signed orders
         vm.startPrank(bob);
-        ERC721(bayc).setApprovalForAll(address(forward), true);
+        ERC721(token).setApprovalForAll(address(forward), true);
         vm.expectRevert(Forward.InvalidSignature.selector);
         forward.fillBid(
             Forward.FillDetails({
@@ -686,14 +705,20 @@ contract ERC721Test is Test {
     }
 
     function testCancel() external {
-        vm.prank(baycOwner);
-        ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
+        vm.prank(tokenOwner);
+        ERC721(token).transferFrom(tokenOwner, bob, tokenIdentifier);
 
         uint256 bidUnitPrice = 1 ether;
         (
             Forward.Order memory forwardOrder,
             bytes memory signature
-        ) = generateForwardBid(alicePk, bayc, baycIdentifier, bidUnitPrice, 1);
+        ) = generateForwardBid(
+                alicePk,
+                token,
+                tokenIdentifier,
+                bidUnitPrice,
+                1
+            );
 
         Forward.Order[] memory ordersToCancel = new Forward.Order[](1);
         ordersToCancel[0] = forwardOrder;
@@ -703,7 +728,7 @@ contract ERC721Test is Test {
 
         // Cannot fill cancelled orders
         vm.startPrank(bob);
-        ERC721(bayc).setApprovalForAll(address(forward), true);
+        ERC721(token).setApprovalForAll(address(forward), true);
         vm.expectRevert(Forward.OrderIsCancelled.selector);
         forward.fillBid(
             Forward.FillDetails({
@@ -718,13 +743,13 @@ contract ERC721Test is Test {
     function testWithdraw() external {
         Forward.ERC721Item[] memory items = new Forward.ERC721Item[](1);
         items[0] = Forward.ERC721Item({
-            token: ERC721(bayc),
-            identifier: baycIdentifier
+            token: ERC721(token),
+            identifier: tokenIdentifier
         });
 
         // Deposit
-        vm.startPrank(baycOwner);
-        ERC721(bayc).setApprovalForAll(address(forward), true);
+        vm.startPrank(tokenOwner);
+        ERC721(token).setApprovalForAll(address(forward), true);
         forward.depositERC721s(items);
         vm.stopPrank();
 
@@ -732,35 +757,35 @@ contract ERC721Test is Test {
         data[0] = fetchOracleOffChainData();
 
         // Must pay royalties when withdrawing
-        vm.startPrank(baycOwner);
+        vm.startPrank(tokenOwner);
         vm.expectRevert(Forward.PaymentFailed.selector);
-        forward.withdrawERC721s(items, data, baycOwner);
+        forward.withdrawERC721s(items, data, tokenOwner);
         vm.stopPrank();
 
         uint256 floorPrice = priceOracle.getPrice(
-            bayc,
-            baycIdentifier,
+            token,
+            tokenIdentifier,
             1 minutes,
             data[0]
         );
 
         // Fetch the royalties to be paid relative to the collection's floor price
         uint256 totalRoyaltyAmount = getTotalRoyaltyAmount(
-            bayc,
-            baycIdentifier,
+            token,
+            tokenIdentifier,
             floorPrice
         );
 
         // Withdraw
-        vm.startPrank(baycOwner);
+        vm.startPrank(tokenOwner);
         forward.withdrawERC721s{value: totalRoyaltyAmount}(
             items,
             data,
-            baycOwner
+            tokenOwner
         );
         vm.stopPrank();
 
         // Ensure the token is now in the withdrawer's wallet
-        require(ERC721(bayc).ownerOf(baycIdentifier) == baycOwner);
+        require(ERC721(token).ownerOf(tokenIdentifier) == tokenOwner);
     }
 }
