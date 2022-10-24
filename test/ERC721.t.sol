@@ -753,6 +753,14 @@ contract ERC721Test is Test {
         forward.depositERC721s(items);
         vm.stopPrank();
 
+        // Ensure the item is owned by the depositor within the protocol
+        require(ERC721(token).ownerOf(tokenIdentifier) == address(forward));
+        require(
+            forward.erc721Owners(
+                keccak256(abi.encode(token, tokenIdentifier))
+            ) == tokenOwner
+        );
+
         bytes[] memory data = new bytes[](1);
         data[0] = fetchOracleOffChainData();
 
@@ -794,13 +802,17 @@ contract ERC721Test is Test {
         vm.prank(blacklist.owner());
         blacklist.adminSetBlacklistStatus(token, true);
 
+        Forward.ERC721Item[] memory items = new Forward.ERC721Item[](1);
+        items[0] = Forward.ERC721Item({
+            token: ERC721(token),
+            identifier: tokenIdentifier
+        });
+
         // Deposit will fail if the token is blacklisted
-        vm.prank(tokenOwner);
+        vm.startPrank(tokenOwner);
+        ERC721(token).setApprovalForAll(address(forward), true);
         vm.expectRevert(Forward.Blacklisted.selector);
-        ERC721(token).safeTransferFrom(
-            tokenOwner,
-            address(forward),
-            tokenIdentifier
-        );
+        forward.depositERC721s(items);
+        vm.stopPrank();
     }
 }

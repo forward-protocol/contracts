@@ -16,16 +16,16 @@ import {IConduitController, ISeaport} from "./interfaces/external/ISeaport.sol";
 contract Forward is Ownable, ReentrancyGuard {
     // Enums
 
+    enum OrderKind {
+        BID,
+        LISTING
+    }
+
     enum ItemKind {
         ERC721,
         ERC1155,
         ERC721_CRITERIA_OR_EXTERNAL,
         ERC1155_CRITERIA_OR_EXTERNAL
-    }
-
-    enum OrderKind {
-        BID,
-        LISTING
     }
 
     // Structs
@@ -37,20 +37,22 @@ contract Forward is Ownable, ReentrancyGuard {
         address token;
         uint256 identifierOrCriteria;
         uint256 unitPrice;
+        // The order's amount is a `uint128` instead of a `uint256` so
+        // that the order status can fit within a single storage slot
         uint128 amount;
         uint256 salt;
         uint256 expiration;
+    }
+
+    struct OrderStatus {
+        bool cancelled;
+        uint128 filledAmount;
     }
 
     struct FillDetails {
         Order order;
         bytes signature;
         uint128 fillAmount;
-    }
-
-    struct OrderStatus {
-        bool cancelled;
-        uint128 filledAmount;
     }
 
     struct ERC721Item {
@@ -64,11 +66,10 @@ contract Forward is Ownable, ReentrancyGuard {
         uint128 amount;
     }
 
-    // Packed representation of a Seaport listing
-    // Limitations:
-    // - ERC721-only
-    // - ETH-denominated
-    // - fixed-price
+    // Packed representation of a Seaport listing, with the following limitations:
+    // - only ERC721 is supported (due to not being able to reduce internal ERC1155 balances when filling)
+    // - only ETH-denominated (for simplicity)
+    // - only fixed-price (for simplicity)
 
     struct Payment {
         uint256 amount;
@@ -170,7 +171,7 @@ contract Forward is Ownable, ReentrancyGuard {
 
     // Depending on the action taken (withdrawing a token or listing externally
     // via Seaport) there are different requirements regarding the staleness of
-    // the oracle's advertised price
+    // the oracle's price
     uint256 public oraclePriceWithdrawMaxAge;
     uint256 public oraclePriceListMaxAge;
 
@@ -381,11 +382,15 @@ contract Forward is Ownable, ReentrancyGuard {
         uint256 length = items.length;
         for (uint256 i = 0; i < length; ) {
             ERC721Item calldata item = items[i];
-            item.token.safeTransferFrom(
-                msg.sender,
-                address(this),
-                item.identifier
-            );
+            IERC721 token = item.token;
+            uint256 identifier = item.identifier;
+
+            // Transfer the token in
+            token.safeTransferFrom(msg.sender, address(this), identifier);
+
+            // Update the internal ownership
+            bytes32 itemId = keccak256(abi.encode(token, identifier));
+            erc721Owners[itemId] = msg.sender;
 
             unchecked {
                 ++i;
@@ -400,13 +405,24 @@ contract Forward is Ownable, ReentrancyGuard {
         uint256 length = items.length;
         for (uint256 i = 0; i < length; ) {
             ERC1155Item calldata item = items[i];
-            item.token.safeTransferFrom(
+            IERC1155 token = item.token;
+            uint256 identifier = item.identifier;
+            uint256 amount = item.amount;
+
+            // Transfer the token in
+            token.safeTransferFrom(
                 msg.sender,
                 address(this),
-                item.identifier,
-                item.amount,
+                identifier,
+                amount,
                 ""
             );
+
+            // Update the internal ownership
+            bytes32 itemId = keccak256(
+                abi.encode(token, identifier, msg.sender)
+            );
+            erc1155Amounts[itemId] += amount;
 
             unchecked {
                 ++i;
@@ -423,7 +439,7 @@ contract Forward is Ownable, ReentrancyGuard {
         for (uint256 i = 0; i < itemsLength; ) {
             ERC721Item memory item = items[i];
 
-            // Ensure only the item's owner can withdraw
+            // Ensure the withdrawer is the item's owner
             bytes32 itemId = keccak256(abi.encode(item.token, item.identifier));
             address owner = erc721Owners[itemId];
             if (msg.sender != owner) {
@@ -686,6 +702,7 @@ contract Forward is Ownable, ReentrancyGuard {
                 );
 
             // Ensure the royalties are present in the payment items
+            // (ordering matters and should match the royalty engine)
             uint256 totalRoyaltyAmount;
             uint256 diff = paymentsLength - royaltyAmounts.length;
             for (uint256 i = diff; i < paymentsLength; ) {
@@ -739,18 +756,18 @@ contract Forward is Ownable, ReentrancyGuard {
     // ERC721
 
     function onERC721Received(
-        address, // operator
-        address from,
-        uint256 tokenId,
+        address operator,
+        address, // from
+        uint256, // tokenId
         bytes calldata // data
-    ) external returns (bytes4) {
+    ) external view returns (bytes4) {
+        if (operator != address(this)) {
+            revert Unauthorized();
+        }
+
         if (blacklist.isBlacklisted(msg.sender)) {
             revert Blacklisted();
         }
-
-        // Update the internal ownership
-        bytes32 itemId = keccak256(abi.encode(msg.sender, tokenId));
-        erc721Owners[itemId] = from;
 
         return this.onERC721Received.selector;
     }
@@ -758,19 +775,19 @@ contract Forward is Ownable, ReentrancyGuard {
     // ERC1155
 
     function onERC1155Received(
-        address, // operator
-        address from,
-        uint256 id,
-        uint256 value,
+        address operator,
+        address, // from
+        uint256, // id
+        uint256, // value
         bytes calldata // data
-    ) external returns (bytes4) {
+    ) external view returns (bytes4) {
+        if (operator != address(this)) {
+            revert Unauthorized();
+        }
+
         if (blacklist.isBlacklisted(msg.sender)) {
             revert Blacklisted();
         }
-
-        // Update the internal ownership
-        bytes32 itemId = keccak256(abi.encode(msg.sender, id, from));
-        erc1155Amounts[itemId] += value;
 
         return this.onERC1155Received.selector;
     }
