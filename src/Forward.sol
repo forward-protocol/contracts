@@ -13,8 +13,6 @@ import {IConduitController, ISeaport} from "./interfaces/ISeaport.sol";
 
 // TODO:
 // - blacklist
-// - decide on handling ERC1155 tokens (which are hackable due do Seaport
-//   filling not able to decrease internal balance)
 
 contract Forward is Ownable, ReentrancyGuard {
     // Enums
@@ -67,16 +65,20 @@ contract Forward is Ownable, ReentrancyGuard {
         uint128 amount;
     }
 
+    // Packed representation of a Seaport listing
+    // Limitations:
+    // - ERC721-only
+    // - ETH-denominated
+    // - fixed-price
+
     struct Payment {
         uint256 amount;
         address recipient;
     }
 
     struct SeaportListingDetails {
-        ISeaport.ItemType itemType;
         address token;
         uint256 identifier;
-        uint256 amount;
         uint256 startTime;
         uint256 endTime;
         uint256 salt;
@@ -626,19 +628,14 @@ contract Forward is Ownable, ReentrancyGuard {
             bytes memory oracleOffChainData
         ) = abi.decode(signature, (SeaportListingDetails, bytes, bytes));
 
-        // Ensure the listed item's type is ERC721 or ERC1155
-        if (uint8(listingDetails.itemType) < 2) {
-            revert SeaportListingIsInvalid();
-        }
-
         // The listing should have a single offer item
         ISeaport.OfferItem[] memory offer = new ISeaport.OfferItem[](1);
         offer[0] = ISeaport.OfferItem({
-            itemType: listingDetails.itemType,
+            itemType: ISeaport.ItemType.ERC721,
             token: listingDetails.token,
             identifierOrCriteria: listingDetails.identifier,
-            startAmount: listingDetails.amount,
-            endAmount: listingDetails.amount
+            startAmount: 1,
+            endAmount: 1
         });
 
         // Keep track of the total payment amount
@@ -676,27 +673,13 @@ contract Forward is Ownable, ReentrancyGuard {
 
         address maker = payments[0].recipient;
 
-        // Ensure the maker owns the listed item(s)
-        if (listingDetails.itemType == ISeaport.ItemType.ERC721) {
-            bytes32 itemId = keccak256(
-                abi.encode(listingDetails.token, listingDetails.identifier)
-            );
+        // Ensure the maker owns the listed item
+        bytes32 itemId = keccak256(
+            abi.encode(listingDetails.token, listingDetails.identifier)
+        );
 
-            if (erc721Owners[itemId] != maker) {
-                revert SeaportListingIsNotFillable();
-            }
-        } else {
-            bytes32 itemId = keccak256(
-                abi.encode(
-                    listingDetails.token,
-                    listingDetails.identifier,
-                    maker
-                )
-            );
-
-            if (erc1155Amounts[itemId] < listingDetails.amount) {
-                revert SeaportListingIsNotFillable();
-            }
+        if (erc721Owners[itemId] != maker) {
+            revert SeaportListingIsNotFillable();
         }
 
         // Fetch the collection's floor price

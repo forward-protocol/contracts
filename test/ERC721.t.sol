@@ -318,10 +318,8 @@ contract ERC721Test is Test {
         // - oracle pricing message
         order.signature = abi.encode(
             Forward.SeaportListingDetails({
-                itemType: ISeaport.ItemType.ERC721,
                 token: token,
                 identifier: identifier,
-                amount: 1,
                 startTime: parameters.startTime,
                 endTime: parameters.endTime,
                 salt: parameters.salt,
