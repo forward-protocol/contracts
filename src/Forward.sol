@@ -7,12 +7,11 @@ import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
 import {IERC721} from "openzeppelin/token/ERC721/IERC721.sol";
 import {IERC1155} from "openzeppelin/token/ERC1155/IERC1155.sol";
 
+import {IBlacklist} from "./interfaces/IBlacklist.sol";
 import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
-import {IRoyaltyEngine} from "./interfaces/IRoyaltyEngine.sol";
-import {IConduitController, ISeaport} from "./interfaces/ISeaport.sol";
 
-// TODO:
-// - blacklist
+import {IRoyaltyEngine} from "./interfaces/external/IRoyaltyEngine.sol";
+import {IConduitController, ISeaport} from "./interfaces/external/ISeaport.sol";
 
 contract Forward is Ownable, ReentrancyGuard {
     // Enums
@@ -108,10 +107,12 @@ contract Forward is Ownable, ReentrancyGuard {
 
     // Events
 
-    event MigrationUpdated(address migration);
-    event MinDiffBpsUpdated(uint256 newMinDiffBps);
+    event BlacklistUpdated(address blacklist);
     event PriceOracleUpdated(address newPriceOracle);
     event RoyaltyEngineUpdated(address newRoyaltyEngine);
+
+    event MigrateToUpdated(address newMigrateTo);
+    event MinPriceBpsUpdated(uint256 newMinPriceBps);
     event SeaportConduitUpdated(bytes32 newSeaportConduitKey);
 
     event CounterIncremented(address maker, uint256 newCounter);
@@ -142,31 +143,32 @@ contract Forward is Ownable, ReentrancyGuard {
     bytes32 public constant SEAPORT_DOMAIN_SEPARATOR =
         0xb50c8913581289bd2e066aeef89fceb9615d490d673131fd1a7047436706834e;
 
-    uint256 public constant WITHDRAW_ORACLE_MAX_MESSAGE_AGE = 30 minutes;
-    uint256 public constant LIST_ORACLE_MAX_MESSAGE_AGE = 1 days;
-
     bytes32 public immutable DOMAIN_SEPARATOR;
     bytes32 public immutable ORDER_TYPEHASH;
 
     // Public fields
 
-    // Used for royalty-free migrations to new versions
-    address public migration;
-
-    // To avoid the possbility of evading royalties (by withdrawing
-    // via private listings to a different own wallet for a zero or
-    // very low price), we enforce the price of every listing which
-    // is outgoing to be within a percentage of the collection floor
-    // price (as specified via an off-chain pricing oracle)
-    uint256 public minDiffBps;
-
-    // Pricing oracle
+    IBlacklist public blacklist;
     IPriceOracle public priceOracle;
-
-    // Royalty engine compatible contract used for royalty lookups
     IRoyaltyEngine public royaltyEngine;
 
-    // Conduit used for Seaport listings (changeable by owner)
+    // Allow royalty-free migrations to new Forward versions (if any)
+    address public migrateTo;
+
+    // To avoid the possbility of evading royalties (by withdrawing via
+    // private listing to a different own wallet for a zero or very low
+    // price) we enforce the price of every outgoing Seaport listing to
+    // be within a percentage from the actual token's price (determined
+    // via a pricing oracle)
+    uint256 public minPriceBps;
+
+    // Depending on the action taken (withdrawing a token or listing externally
+    // via Seaport) there are different requirements regarding the staleness of
+    // the oracle's advertised price
+    uint256 public withdrawOraclePriceMaxAge;
+    uint256 public listOraclePriceMaxAge;
+
+    // Conduit used for Seaport listings from the protocol
     bytes32 public seaportConduitKey;
     address public seaportConduit;
 
@@ -182,14 +184,19 @@ contract Forward is Ownable, ReentrancyGuard {
 
     // Constructor
 
-    constructor(address initialPriceOracle) {
-        minDiffBps = 8000; // 80%
-        priceOracle = IPriceOracle(initialPriceOracle);
+    constructor(
+        address _blacklist,
+        address _priceOracle,
+        address _royaltyEngine
+    ) {
+        blacklist = IBlacklist(_blacklist);
+        priceOracle = IPriceOracle(_priceOracle);
+        royaltyEngine = IRoyaltyEngine(_royaltyEngine);
 
-        // Use the default royalty engine
-        royaltyEngine = IRoyaltyEngine(
-            0x0385603ab55642cb4Dd5De3aE9e306809991804f
-        );
+        minPriceBps = 8000;
+
+        withdrawOraclePriceMaxAge = 30 minutes;
+        listOraclePriceMaxAge = 1 days;
 
         // Use OpenSea's default conduit (so that Seaport listings are available on OpenSea)
         seaportConduitKey = 0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000;
@@ -239,9 +246,9 @@ contract Forward is Ownable, ReentrancyGuard {
 
     // Restricted methods
 
-    function updateMigration(address newMigration) external onlyOwner {
-        migration = newMigration;
-        emit MigrationUpdated(newMigration);
+    function updateBlacklist(address newBlacklist) external onlyOwner {
+        blacklist = IBlacklist(newBlacklist);
+        emit BlacklistUpdated(newBlacklist);
     }
 
     function updatePriceOracle(address newPriceOracle) external onlyOwner {
@@ -252,6 +259,16 @@ contract Forward is Ownable, ReentrancyGuard {
     function updateRoyaltyEngine(address newRoyaltyEngine) external onlyOwner {
         royaltyEngine = IRoyaltyEngine(newRoyaltyEngine);
         emit RoyaltyEngineUpdated(newRoyaltyEngine);
+    }
+
+    function updateMigrateTo(address newMigrateTo) external onlyOwner {
+        migrateTo = newMigrateTo;
+        emit MigrateToUpdated(newMigrateTo);
+    }
+
+    function updateMinPriceBps(uint256 newMinPriceBps) external onlyOwner {
+        minPriceBps = newMinPriceBps;
+        emit MinPriceBpsUpdated(newMinPriceBps);
     }
 
     function updateSeaportConduit(bytes32 newSeaportConduitKey)
@@ -311,54 +328,6 @@ contract Forward is Ownable, ReentrancyGuard {
         _fillListing(details);
     }
 
-    function fillListingWithWithdraw(FillDetails calldata details)
-        external
-        payable
-        nonReentrant
-    {
-        _fillListing(details);
-
-        address token = details.order.token;
-        uint256 identifier = details.order.identifierOrCriteria;
-        uint256 fillAmount = details.fillAmount;
-
-        // Fetch the item's royalties (relative to the listing's price)
-        (
-            address[] memory royaltyRecipients,
-            uint256[] memory royaltyAmounts
-        ) = royaltyEngine.getRoyaltyView(
-                address(token),
-                identifier,
-                details.order.unitPrice * fillAmount
-            );
-
-        // Pay the royalties
-        uint256 recipientsLength = royaltyRecipients.length;
-        for (uint256 i = 0; i < recipientsLength; ) {
-            _sendPayment(royaltyRecipients[i], royaltyAmounts[i]);
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        if (uint8(details.order.itemKind) % 2 == 0) {
-            IERC721(token).safeTransferFrom(
-                address(this),
-                msg.sender,
-                identifier
-            );
-        } else {
-            IERC1155(token).safeTransferFrom(
-                address(this),
-                msg.sender,
-                identifier,
-                fillAmount,
-                ""
-            );
-        }
-    }
-
     function cancel(Order[] calldata orders) external {
         uint256 length = orders.length;
         for (uint256 i = 0; i < length; ) {
@@ -397,10 +366,6 @@ contract Forward is Ownable, ReentrancyGuard {
         uint256 length = items.length;
         for (uint256 i = 0; i < length; ) {
             ERC721Item calldata item = items[i];
-
-            bytes32 itemId = keccak256(abi.encode(item.token, item.identifier));
-            erc721Owners[itemId] = msg.sender;
-
             item.token.safeTransferFrom(
                 msg.sender,
                 address(this),
@@ -420,12 +385,6 @@ contract Forward is Ownable, ReentrancyGuard {
         uint256 length = items.length;
         for (uint256 i = 0; i < length; ) {
             ERC1155Item calldata item = items[i];
-
-            bytes32 itemId = keccak256(
-                abi.encode(item.token, item.identifier, msg.sender)
-            );
-            erc1155Amounts[itemId] += item.amount;
-
             item.token.safeTransferFrom(
                 msg.sender,
                 address(this),
@@ -456,8 +415,9 @@ contract Forward is Ownable, ReentrancyGuard {
             }
 
             // Only pay royalties when not migrating
-            if (recipient == migration) {
-                if (migration == address(0)) {
+            address localMigrateTo = migrateTo;
+            if (recipient == localMigrateTo) {
+                if (localMigrateTo == address(0)) {
                     revert Unauthorized();
                 }
 
@@ -470,13 +430,13 @@ contract Forward is Ownable, ReentrancyGuard {
                 );
             } else {
                 // Fetch the token collection's floor price
-                uint256 floorPrice = priceOracle.getCollectionFloorPriceByToken(
-                        address(item.token),
-                        item.identifier,
-                        WITHDRAW_ORACLE_MAX_MESSAGE_AGE,
-                        // Interpreted as oracle-specific data
-                        data[i]
-                    );
+                uint256 floorPrice = priceOracle.getPrice(
+                    address(item.token),
+                    item.identifier,
+                    withdrawOraclePriceMaxAge,
+                    // Interpreted as oracle-specific data
+                    data[i]
+                );
 
                 // Fetch the item's royalties (relative to the collection floor price)
                 (
@@ -529,8 +489,9 @@ contract Forward is Ownable, ReentrancyGuard {
             }
 
             // Only pay royalties when not migrating
-            if (recipient == migration) {
-                if (migration == address(0)) {
+            address localMigrateTo = migrateTo;
+            if (recipient == localMigrateTo) {
+                if (localMigrateTo == address(0)) {
                     revert Unauthorized();
                 }
 
@@ -544,13 +505,13 @@ contract Forward is Ownable, ReentrancyGuard {
                 );
             } else {
                 // Fetch the token collection's floor price
-                uint256 floorPrice = priceOracle.getCollectionFloorPriceByToken(
-                        address(item.token),
-                        item.identifier,
-                        WITHDRAW_ORACLE_MAX_MESSAGE_AGE,
-                        // Interpreted as oracle-specific data
-                        data[i]
-                    );
+                uint256 floorPrice = priceOracle.getPrice(
+                    address(item.token),
+                    item.identifier,
+                    withdrawOraclePriceMaxAge,
+                    // Interpreted as oracle-specific data
+                    data[i]
+                );
 
                 // Fetch the item's royalties (relative to the collection floor price)
                 (
@@ -683,15 +644,15 @@ contract Forward is Ownable, ReentrancyGuard {
         }
 
         // Fetch the collection's floor price
-        uint256 price = priceOracle.getCollectionFloorPriceByToken(
+        uint256 price = priceOracle.getPrice(
             listingDetails.token,
             listingDetails.identifier,
-            LIST_ORACLE_MAX_MESSAGE_AGE,
+            listOraclePriceMaxAge,
             oracleOffChainData
         );
 
-        // Ensure the listing's price is within `minDiffBps` of the token collection's floor price
-        if (totalPrice < (price * minDiffBps) / 10000) {
+        // Ensure the listing's price is within `minPriceBps` of the token collection's floor price
+        if (totalPrice < (price * minPriceBps) / 10000) {
             revert SeaportListingIsUnderpriced();
         }
 
@@ -760,15 +721,14 @@ contract Forward is Ownable, ReentrancyGuard {
     // ERC721
 
     function onERC721Received(
-        address operator,
-        address, // from
-        uint256, // tokenId
+        address, // operator
+        address from,
+        uint256 tokenId,
         bytes calldata // data
-    ) external view returns (bytes4) {
-        // Only the protocol can send tokens
-        if (operator != address(this)) {
-            revert Unauthorized();
-        }
+    ) external returns (bytes4) {
+        // Update the internal ownership
+        bytes32 itemId = keccak256(abi.encode(msg.sender, tokenId));
+        erc721Owners[itemId] = from;
 
         return this.onERC721Received.selector;
     }
@@ -776,16 +736,15 @@ contract Forward is Ownable, ReentrancyGuard {
     // ERC1155
 
     function onERC1155Received(
-        address operator,
-        address, // from
-        uint256, // id
-        uint256, // value
+        address, // operator
+        address from,
+        uint256 id,
+        uint256 value,
         bytes calldata // data
-    ) external view returns (bytes4) {
-        // Only the protocol can send tokens
-        if (operator != address(this)) {
-            revert Unauthorized();
-        }
+    ) external returns (bytes4) {
+        // Update the internal ownership
+        bytes32 itemId = keccak256(abi.encode(msg.sender, id, from));
+        erc1155Amounts[itemId] += value;
 
         return this.onERC1155Received.selector;
     }

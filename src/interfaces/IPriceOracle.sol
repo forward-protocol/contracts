@@ -2,10 +2,10 @@
 pragma solidity ^0.8.17;
 
 interface IPriceOracle {
-    function getCollectionFloorPriceByToken(
+    function getPrice(
         address token,
         uint256 tokenId,
-        uint256 maxMessageAge,
+        uint256 maxAge,
         bytes calldata offChainData
-    ) external view returns (uint256);
+    ) external view returns (uint256 price);
 }

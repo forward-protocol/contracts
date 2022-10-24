@@ -3,24 +3,25 @@ pragma solidity ^0.8.17;
 
 import {ReservoirOracle} from "oracle/ReservoirOracle.sol";
 
-import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
-
-contract ReservoirPriceOracle is IPriceOracle, ReservoirOracle {
+// In order to enforce the proper payout of royalties, we need an oracle
+// attesting the price of the token for which royalties are paid. It can
+// the floor price or the appraised price (or even something else).
+contract PriceOracle is ReservoirOracle {
     // Constructor
 
-    constructor(address reservoirOracle) ReservoirOracle(reservoirOracle) {}
+    constructor(address reservoirSigner) ReservoirOracle(reservoirSigner) {}
 
     // Public methods
 
-    function getCollectionFloorPriceByToken(
+    function getPrice(
         // On-chain data
         address token,
         uint256 tokenId,
-        uint256 maxMessageAge,
+        uint256 maxAge,
         // Off-chain data
         bytes calldata offChainData
-    ) external view override returns (uint256) {
-        // Decode off-chain data
+    ) external view returns (uint256) {
+        // Decode the off-chain data
         ReservoirOracle.Message memory message = abi.decode(
             offChainData,
             (ReservoirOracle.Message)
@@ -40,7 +41,7 @@ contract ReservoirPriceOracle is IPriceOracle, ReservoirOracle {
         );
 
         // Validate the message
-        if (!_verifyMessage(id, maxMessageAge, message)) {
+        if (!_verifyMessage(id, maxAge, message)) {
             revert InvalidMessage();
         }
 

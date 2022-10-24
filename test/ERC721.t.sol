@@ -7,15 +7,21 @@ import {Merkle} from "murky/Merkle.sol";
 import {ERC721} from "openzeppelin/token/ERC721/ERC721.sol";
 import {ReservoirOracle} from "oracle/ReservoirOracle.sol";
 
+import {Blacklist} from "../src/Blacklist.sol";
 import {Forward} from "../src/Forward.sol";
-import {ReservoirPriceOracle} from "../src/ReservoirPriceOracle.sol";
-import {ISeaport} from "../src/interfaces/ISeaport.sol";
-import {IWETH} from "../src/interfaces/IWETH.sol";
+import {PriceOracle} from "../src/PriceOracle.sol";
+
+import {IRoyaltyEngine} from "../src/interfaces/external/IRoyaltyEngine.sol";
+import {ISeaport} from "../src/interfaces/external/ISeaport.sol";
+import {IWETH} from "../src/interfaces/external/IWETH.sol";
 
 contract ERC721Test is Test {
     using stdJson for string;
 
-    ReservoirPriceOracle internal oracle;
+    Blacklist internal blacklist;
+    PriceOracle internal priceOracle;
+    IRoyaltyEngine internal royaltyEngine;
+
     Forward internal forward;
     IWETH internal weth;
 
@@ -35,10 +41,19 @@ contract ERC721Test is Test {
         vm.createSelectFork("mainnet");
         vm.warp(block.timestamp + 60);
 
-        oracle = new ReservoirPriceOracle(
+        blacklist = new Blacklist();
+        priceOracle = new PriceOracle(
             0x32dA57E736E05f75aa4FaE2E9Be60FD904492726
         );
-        forward = new Forward(address(oracle));
+        royaltyEngine = IRoyaltyEngine(
+            0x0385603ab55642cb4Dd5De3aE9e306809991804f
+        );
+
+        forward = new Forward(
+            address(blacklist),
+            address(priceOracle),
+            address(royaltyEngine)
+        );
         weth = IWETH(address(forward.WETH()));
 
         // Grant some ETH to all wallets
@@ -643,60 +658,6 @@ contract ERC721Test is Test {
         );
     }
 
-    function testFillForwardExternalListingWithWithdraw() public {
-        vm.prank(baycOwner);
-        ERC721(bayc).transferFrom(baycOwner, alice, baycIdentifier);
-
-        uint256 listingUnitPrice = 1 ether;
-        (
-            Forward.Order memory listing,
-            bytes memory listingSignature
-        ) = generateForwardExternalListing(
-                alicePk,
-                bayc,
-                baycIdentifier,
-                listingUnitPrice
-            );
-
-        uint256 aliceETHBalanceBefore = alice.balance;
-
-        // Fetch the royalties to be paid relative to the listing's price
-        uint256 totalRoyaltyAmount = getTotalRoyaltyAmount(
-            bayc,
-            baycIdentifier,
-            listingUnitPrice
-        );
-
-        // Fill listing
-        vm.startPrank(carol);
-        forward.fillListingWithWithdraw{
-            value: listingUnitPrice + totalRoyaltyAmount
-        }(
-            Forward.FillDetails({
-                order: listing,
-                signature: listingSignature,
-                fillAmount: 1
-            })
-        );
-        vm.stopPrank();
-
-        uint256 aliceETHBalanceAfter = alice.balance;
-
-        // Ensure the maker got the payment from the listing
-        require(
-            aliceETHBalanceAfter - aliceETHBalanceBefore == listingUnitPrice
-        );
-
-        // Ensure the token is outside the protocol
-        require(ERC721(bayc).ownerOf(baycIdentifier) == address(carol));
-
-        // Ensure the token is owned by the taker inside the protocol
-        address owner = forward.erc721Owners(
-            keccak256(abi.encode(bayc, baycIdentifier))
-        );
-        require(owner == carol);
-    }
-
     function testCounterIncrement() public {
         vm.prank(baycOwner);
         ERC721(bayc).transferFrom(baycOwner, bob, baycIdentifier);
@@ -776,7 +737,7 @@ contract ERC721Test is Test {
         forward.withdrawERC721s(items, data, baycOwner);
         vm.stopPrank();
 
-        uint256 floorPrice = oracle.getCollectionFloorPriceByToken(
+        uint256 floorPrice = priceOracle.getPrice(
             bayc,
             baycIdentifier,
             1 minutes,
