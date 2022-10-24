@@ -8,6 +8,7 @@ import {IERC721} from "openzeppelin/token/ERC721/IERC721.sol";
 import {IERC1155} from "openzeppelin/token/ERC1155/IERC1155.sol";
 
 import {IBlacklist} from "./interfaces/IBlacklist.sol";
+import {IMigrateTo} from "./interfaces/IMigrateTo.sol";
 import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
 
 import {IRoyaltyEngine} from "./interfaces/external/IRoyaltyEngine.sol";
@@ -160,7 +161,7 @@ contract Forward is Ownable, ReentrancyGuard {
     IRoyaltyEngine public royaltyEngine;
 
     // Allow royalty-free migrations to new Forward versions (if any)
-    address public migrateTo;
+    IMigrateTo public migrateTo;
 
     // To avoid the possbility of evading royalties (by withdrawing via
     // private listing to a different own wallet for a zero or very low
@@ -269,7 +270,7 @@ contract Forward is Ownable, ReentrancyGuard {
     }
 
     function updateMigrateTo(address newMigrateTo) external onlyOwner {
-        migrateTo = newMigrateTo;
+        migrateTo = IMigrateTo(newMigrateTo);
         emit MigrateToUpdated(newMigrateTo);
     }
 
@@ -438,9 +439,11 @@ contract Forward is Ownable, ReentrancyGuard {
         uint256 itemsLength = items.length;
         for (uint256 i = 0; i < itemsLength; ) {
             ERC721Item memory item = items[i];
+            IERC721 token = item.token;
+            uint256 identifier = item.identifier;
 
             // Ensure the withdrawer is the item's owner
-            bytes32 itemId = keccak256(abi.encode(item.token, item.identifier));
+            bytes32 itemId = keccak256(abi.encode(token, identifier));
             address owner = erc721Owners[itemId];
             if (msg.sender != owner) {
                 revert Unauthorized();
@@ -448,8 +451,8 @@ contract Forward is Ownable, ReentrancyGuard {
 
             // Fetch the token's price
             uint256 price = priceOracle.getPrice(
-                address(item.token),
-                item.identifier,
+                address(token),
+                identifier,
                 oraclePriceWithdrawMaxAge,
                 // Oracle off-chain data
                 data[i]
@@ -459,11 +462,7 @@ contract Forward is Ownable, ReentrancyGuard {
             (
                 address[] memory royaltyRecipients,
                 uint256[] memory royaltyAmounts
-            ) = royaltyEngine.getRoyaltyView(
-                    address(item.token),
-                    item.identifier,
-                    price
-                );
+            ) = royaltyEngine.getRoyaltyView(address(token), identifier, price);
 
             // Pay the royalties
             uint256 recipientsLength = royaltyRecipients.length;
@@ -475,11 +474,7 @@ contract Forward is Ownable, ReentrancyGuard {
                 }
             }
 
-            item.token.safeTransferFrom(
-                address(this),
-                recipient,
-                item.identifier
-            );
+            token.safeTransferFrom(address(this), recipient, identifier);
 
             unchecked {
                 ++i;
@@ -495,20 +490,23 @@ contract Forward is Ownable, ReentrancyGuard {
         uint256 itemsLength = items.length;
         for (uint256 i = 0; i < itemsLength; ) {
             ERC1155Item memory item = items[i];
+            IERC1155 token = item.token;
+            uint256 identifier = item.identifier;
+            uint256 amount = item.amount;
 
             // Ensure the withdrawer has enough balance
             bytes32 itemId = keccak256(
-                abi.encode(item.token, item.identifier, msg.sender)
+                abi.encode(token, identifier, msg.sender)
             );
-            uint256 amount = erc1155Amounts[itemId];
-            if (item.amount > amount) {
+            uint256 ownedAmount = erc1155Amounts[itemId];
+            if (item.amount > ownedAmount) {
                 revert Unauthorized();
             }
 
             // Fetch the token's price
             uint256 price = priceOracle.getPrice(
-                address(item.token),
-                item.identifier,
+                address(token),
+                identifier,
                 oraclePriceWithdrawMaxAge,
                 // Oracle off-chain data
                 data[i]
@@ -519,9 +517,9 @@ contract Forward is Ownable, ReentrancyGuard {
                 address[] memory royaltyRecipients,
                 uint256[] memory royaltyAmounts
             ) = royaltyEngine.getRoyaltyView(
-                    address(item.token),
-                    item.identifier,
-                    price * item.amount
+                    address(token),
+                    identifier,
+                    price * amount
                 );
 
             // Pay the royalties
@@ -534,11 +532,11 @@ contract Forward is Ownable, ReentrancyGuard {
                 }
             }
 
-            item.token.safeTransferFrom(
+            token.safeTransferFrom(
                 address(this),
                 recipient,
-                item.identifier,
-                item.amount,
+                identifier,
+                amount,
                 ""
             );
 
@@ -549,27 +547,36 @@ contract Forward is Ownable, ReentrancyGuard {
     }
 
     function migrateERC721s(ERC721Item[] calldata items) external {
-        address localMigrateTo = migrateTo;
-        if (localMigrateTo == address(0)) {
+        IMigrateTo localMigrateTo = migrateTo;
+        if (address(localMigrateTo) == address(0)) {
             revert ZeroMigrateTo();
         }
 
         uint256 length = items.length;
         for (uint256 i = 0; i < length; ) {
             ERC721Item calldata item = items[i];
+            IERC721 token = item.token;
+            uint256 identifier = item.identifier;
 
             // Ensure the migrator is the item's owner
-            bytes32 itemId = keccak256(abi.encode(item.token, item.identifier));
+            bytes32 itemId = keccak256(abi.encode(token, identifier));
             address owner = erc721Owners[itemId];
             if (msg.sender != owner) {
                 revert Unauthorized();
             }
 
-            item.token.safeTransferFrom(
+            // Transfer the token to the migration contract
+            token.safeTransferFrom(
                 address(this),
-                localMigrateTo,
-                item.identifier
+                address(localMigrateTo),
+                identifier
             );
+
+            // Process the migration
+            localMigrateTo.processMigratedERC721(token, identifier, owner);
+
+            // Clear internal ownership
+            erc721Owners[itemId] = address(0);
 
             unchecked {
                 ++i;
@@ -578,31 +585,46 @@ contract Forward is Ownable, ReentrancyGuard {
     }
 
     function migrateERC1155s(ERC1155Item[] calldata items) external {
-        address localMigrateTo = migrateTo;
-        if (localMigrateTo == address(0)) {
+        IMigrateTo localMigrateTo = migrateTo;
+        if (address(localMigrateTo) == address(0)) {
             revert ZeroMigrateTo();
         }
 
         uint256 length = items.length;
         for (uint256 i = 0; i < length; ) {
             ERC1155Item calldata item = items[i];
+            IERC1155 token = item.token;
+            uint256 identifier = item.identifier;
+            uint256 amount = item.amount;
 
             // Ensure the migrator has enough balance
             bytes32 itemId = keccak256(
-                abi.encode(item.token, item.identifier, msg.sender)
+                abi.encode(token, identifier, msg.sender)
             );
-            uint256 amount = erc1155Amounts[itemId];
-            if (item.amount > amount) {
+            uint256 ownedAmount = erc1155Amounts[itemId];
+            if (amount > ownedAmount) {
                 revert Unauthorized();
             }
 
-            item.token.safeTransferFrom(
+            // Transfer the token to the migration contract
+            token.safeTransferFrom(
                 address(this),
-                localMigrateTo,
-                item.identifier,
-                item.amount,
+                address(localMigrateTo),
+                identifier,
+                amount,
                 ""
             );
+
+            // Process the migration
+            localMigrateTo.processMigratedERC1155(
+                token,
+                identifier,
+                amount,
+                msg.sender
+            );
+
+            // Reduce internal ownership
+            erc1155Amounts[itemId] -= amount;
 
             unchecked {
                 ++i;

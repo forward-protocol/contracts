@@ -11,9 +11,13 @@ import {Blacklist} from "../src/Blacklist.sol";
 import {Forward} from "../src/Forward.sol";
 import {PriceOracle} from "../src/PriceOracle.sol";
 
+import {IMigrateTo} from "../src/interfaces/IMigrateTo.sol";
+
 import {IRoyaltyEngine} from "../src/interfaces/external/IRoyaltyEngine.sol";
 import {ISeaport} from "../src/interfaces/external/ISeaport.sol";
 import {IWETH} from "../src/interfaces/external/IWETH.sol";
+
+import {DummyMigrateTo} from "./utils/DummyMigrateTo.sol";
 
 contract ERC721Test is Test {
     using stdJson for string;
@@ -814,5 +818,51 @@ contract ERC721Test is Test {
         vm.expectRevert(Forward.Blacklisted.selector);
         forward.depositERC721s(items);
         vm.stopPrank();
+    }
+
+    function testMigrate() external {
+        Forward.ERC721Item[] memory items = new Forward.ERC721Item[](1);
+        items[0] = Forward.ERC721Item({
+            token: ERC721(token),
+            identifier: tokenIdentifier
+        });
+
+        // Deposit
+        vm.startPrank(tokenOwner);
+        ERC721(token).setApprovalForAll(address(forward), true);
+        forward.depositERC721s(items);
+        vm.stopPrank();
+
+        IMigrateTo migrateTo = new DummyMigrateTo(address(forward));
+
+        // Only the protocol should be able to trigger migrations
+        vm.prank(tokenOwner);
+        vm.expectRevert(DummyMigrateTo.Unauthorized.selector);
+        migrateTo.processMigratedERC721(
+            ERC721(token),
+            tokenIdentifier,
+            tokenOwner
+        );
+
+        // Start migration
+        vm.prank(forward.owner());
+        forward.updateMigrateTo(address(migrateTo));
+
+        // Migrate
+        vm.prank(tokenOwner);
+        forward.migrateERC721s(items);
+
+        // Ensure the item was migrate successfully
+        require(ERC721(token).ownerOf(tokenIdentifier) == address(migrateTo));
+        require(
+            forward.erc721Owners(
+                keccak256(abi.encode(token, tokenIdentifier))
+            ) == address(0)
+        );
+
+        // Migrating a second time will fail
+        vm.prank(tokenOwner);
+        vm.expectRevert(Forward.Unauthorized.selector);
+        forward.migrateERC721s(items);
     }
 }
