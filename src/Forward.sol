@@ -17,7 +17,7 @@ import {IConduitController, ISeaport} from "./interfaces/external/ISeaport.sol";
 contract Forward is Ownable, ReentrancyGuard {
     // Enums
 
-    enum OrderKind {
+    enum Side {
         BID,
         LISTING
     }
@@ -32,7 +32,7 @@ contract Forward is Ownable, ReentrancyGuard {
     // Structs
 
     struct Order {
-        OrderKind orderKind;
+        Side side;
         ItemKind itemKind;
         address maker;
         address token;
@@ -128,7 +128,7 @@ contract Forward is Ownable, ReentrancyGuard {
     event OrderCancelled(bytes32 orderHash);
     event OrderFilled(
         bytes32 orderHash,
-        OrderKind orderKind,
+        Side side,
         address maker,
         address taker,
         address token,
@@ -847,7 +847,7 @@ contract Forward is Ownable, ReentrancyGuard {
         Order memory order = details.order;
 
         // Ensure the order is a bid
-        if (order.orderKind != OrderKind.BID) {
+        if (order.side != Side.BID) {
             revert OrderIsInvalid();
         }
 
@@ -942,7 +942,7 @@ contract Forward is Ownable, ReentrancyGuard {
 
         emit OrderFilled(
             orderHash,
-            order.orderKind,
+            order.side,
             maker,
             msg.sender,
             token,
@@ -956,7 +956,7 @@ contract Forward is Ownable, ReentrancyGuard {
         Order memory order = details.order;
 
         // Ensure the order is a listing
-        if (order.orderKind != OrderKind.LISTING) {
+        if (order.side != Side.LISTING) {
             revert OrderIsInvalid();
         }
 
@@ -1046,7 +1046,7 @@ contract Forward is Ownable, ReentrancyGuard {
 
         emit OrderFilled(
             orderHash,
-            order.orderKind,
+            order.side,
             maker,
             msg.sender,
             token,

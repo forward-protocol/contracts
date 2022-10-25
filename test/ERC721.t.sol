@@ -120,7 +120,7 @@ contract ERC721Test is Test {
 
         // Generate bid
         order = Forward.Order({
-            orderKind: Forward.OrderKind.BID,
+            side: Forward.Side.BID,
             itemKind: identifierOrCriteria > 0 && identifierOrCriteria < 10000
                 ? Forward.ItemKind.ERC721
                 : Forward.ItemKind.ERC721_CRITERIA_OR_EXTERNAL,
@@ -157,7 +157,7 @@ contract ERC721Test is Test {
 
         // Generate listing
         order = Forward.Order({
-            orderKind: Forward.OrderKind.LISTING,
+            side: Forward.Side.LISTING,
             itemKind: Forward.ItemKind.ERC721,
             maker: maker,
             token: tokenAddress,
@@ -197,7 +197,7 @@ contract ERC721Test is Test {
 
         // Generate listing
         order = Forward.Order({
-            orderKind: Forward.OrderKind.LISTING,
+            side: Forward.Side.LISTING,
             itemKind: Forward.ItemKind.ERC721_CRITERIA_OR_EXTERNAL,
             maker: maker,
             token: tokenAddress,
