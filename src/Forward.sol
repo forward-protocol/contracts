@@ -643,6 +643,7 @@ contract Forward is Ownable, ReentrancyGuard {
         orderHash = keccak256(
             abi.encode(
                 ORDER_TYPEHASH,
+                order.side,
                 order.itemKind,
                 maker,
                 order.token,
