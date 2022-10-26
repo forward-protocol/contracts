@@ -129,6 +129,7 @@ contract Forward is Ownable, ReentrancyGuard {
     event OrderFilled(
         bytes32 orderHash,
         Side side,
+        ItemKind itemKind,
         address maker,
         address taker,
         address token,
@@ -944,6 +945,7 @@ contract Forward is Ownable, ReentrancyGuard {
         emit OrderFilled(
             orderHash,
             order.side,
+            order.itemKind,
             maker,
             msg.sender,
             token,
@@ -1048,6 +1050,7 @@ contract Forward is Ownable, ReentrancyGuard {
         emit OrderFilled(
             orderHash,
             order.side,
+            order.itemKind,
             maker,
             msg.sender,
             token,
