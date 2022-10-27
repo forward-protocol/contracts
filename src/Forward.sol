@@ -5,7 +5,6 @@ import {Ownable} from "openzeppelin/access/Ownable.sol";
 import {ReentrancyGuard} from "openzeppelin/security/ReentrancyGuard.sol";
 import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
 import {IERC721} from "openzeppelin/token/ERC721/IERC721.sol";
-import {IERC1155} from "openzeppelin/token/ERC1155/IERC1155.sol";
 
 import {IBlacklist} from "./interfaces/IBlacklist.sol";
 import {IMigrateTo} from "./interfaces/IMigrateTo.sol";
@@ -17,25 +16,17 @@ import {IConduitController, ISeaport} from "./interfaces/external/ISeaport.sol";
 contract Forward is Ownable, ReentrancyGuard {
     // Enums
 
-    enum Side {
-        BID,
-        LISTING
-    }
-
     enum ItemKind {
         ERC721,
-        ERC1155,
-        ERC721_CRITERIA_OR_EXTERNAL,
-        ERC1155_CRITERIA_OR_EXTERNAL
+        ERC721_WITH_CRITERIA
     }
 
     // Structs
 
     struct Order {
-        Side side;
         ItemKind itemKind;
         address maker;
-        address token;
+        IERC721 token;
         uint256 identifierOrCriteria;
         uint256 unitPrice;
         // The order's amount is a `uint128` instead of a `uint256` so
@@ -53,24 +44,16 @@ contract Forward is Ownable, ReentrancyGuard {
     struct FillDetails {
         Order order;
         bytes signature;
-        uint128 fillAmount;
     }
 
-    struct ERC721Item {
+    struct Item {
         IERC721 token;
         uint256 identifier;
     }
 
-    struct ERC1155Item {
-        IERC1155 token;
-        uint256 identifier;
-        uint128 amount;
-    }
-
     // Packed representation of a Seaport listing, with the following limitations:
-    // - only ERC721 is supported (due to not being able to reduce internal ERC1155 balances when filling)
-    // - only ETH-denominated (for simplicity)
-    // - only fixed-price (for simplicity)
+    // - ETH-denominated
+    // - fixed-price
 
     struct Payment {
         uint256 amount;
@@ -128,14 +111,11 @@ contract Forward is Ownable, ReentrancyGuard {
     event OrderCancelled(bytes32 orderHash);
     event OrderFilled(
         bytes32 orderHash,
-        Side side,
-        ItemKind itemKind,
         address maker,
         address taker,
         address token,
         uint256 identifier,
-        uint256 unitPrice,
-        uint128 amount
+        uint256 unitPrice
     );
 
     // Public constants
@@ -186,10 +166,8 @@ contract Forward is Ownable, ReentrancyGuard {
     // Mapping from wallet to current counter
     mapping(address => uint256) public counters;
 
-    // `keccak256(abi.encode(token, identifier)) => owner`
-    mapping(bytes32 => address) public erc721Owners;
-    // `keccak256(abi.encode(token, identifier, owner)) => amount`
-    mapping(bytes32 => uint256) public erc1155Amounts;
+    // Mapping from item id (eg. `keccak256(abi.encode(token, identifier))) to owner
+    mapping(bytes32 => address) public itemOwners;
 
     // Constructor
 
@@ -238,7 +216,6 @@ contract Forward is Ownable, ReentrancyGuard {
         ORDER_TYPEHASH = keccak256(
             abi.encodePacked(
                 "Order(",
-                "uint8 side,",
                 "uint8 itemKind,",
                 "address maker,",
                 "address token,",
@@ -308,7 +285,7 @@ contract Forward is Ownable, ReentrancyGuard {
 
     function fillBid(FillDetails calldata details) external nonReentrant {
         // Ensure the order is non-criteria-based
-        if (uint8(details.order.itemKind) > 1) {
+        if (uint8(details.order.itemKind) != 0) {
             revert OrderIsInvalid();
         }
 
@@ -321,7 +298,7 @@ contract Forward is Ownable, ReentrancyGuard {
         bytes32[] calldata criteriaProof
     ) external nonReentrant {
         // Ensure the order is criteria-based
-        if (uint8(details.order.itemKind) < 2) {
+        if (uint8(details.order.itemKind) != 1) {
             revert OrderIsInvalid();
         }
 
@@ -336,14 +313,6 @@ contract Forward is Ownable, ReentrancyGuard {
         }
 
         _fillBid(details, identifier);
-    }
-
-    function fillListing(FillDetails calldata details)
-        external
-        payable
-        nonReentrant
-    {
-        _fillListing(details);
     }
 
     function cancel(Order[] calldata orders) external {
@@ -380,19 +349,20 @@ contract Forward is Ownable, ReentrancyGuard {
         emit CounterIncremented(msg.sender, newCounter);
     }
 
-    function depositERC721s(ERC721Item[] calldata items) external nonReentrant {
+    function deposit(Item[] calldata items) external nonReentrant {
         uint256 length = items.length;
         for (uint256 i = 0; i < length; ) {
-            ERC721Item calldata item = items[i];
+            Item calldata item = items[i];
+
             IERC721 token = item.token;
             uint256 identifier = item.identifier;
 
             // Transfer the token in
             token.safeTransferFrom(msg.sender, address(this), identifier);
 
-            // Update the internal ownership
+            // Update internal ownership
             bytes32 itemId = keccak256(abi.encode(token, identifier));
-            erc721Owners[itemId] = msg.sender;
+            itemOwners[itemId] = msg.sender;
 
             unchecked {
                 ++i;
@@ -400,52 +370,21 @@ contract Forward is Ownable, ReentrancyGuard {
         }
     }
 
-    function depositERC1155s(ERC1155Item[] calldata items)
-        external
-        nonReentrant
-    {
-        uint256 length = items.length;
-        for (uint256 i = 0; i < length; ) {
-            ERC1155Item calldata item = items[i];
-            IERC1155 token = item.token;
-            uint256 identifier = item.identifier;
-            uint256 amount = item.amount;
-
-            // Transfer the token in
-            token.safeTransferFrom(
-                msg.sender,
-                address(this),
-                identifier,
-                amount,
-                ""
-            );
-
-            // Update the internal ownership
-            bytes32 itemId = keccak256(
-                abi.encode(token, identifier, msg.sender)
-            );
-            erc1155Amounts[itemId] += amount;
-
-            unchecked {
-                ++i;
-            }
-        }
-    }
-
-    function withdrawERC721s(
-        ERC721Item[] memory items,
+    function withdraw(
+        Item[] memory items,
         bytes[] memory data,
         address recipient
     ) public payable nonReentrant {
         uint256 itemsLength = items.length;
         for (uint256 i = 0; i < itemsLength; ) {
-            ERC721Item memory item = items[i];
+            Item memory item = items[i];
+
             IERC721 token = item.token;
             uint256 identifier = item.identifier;
 
-            // Ensure the withdrawer is the item's owner
+            // Ensure the sender is the item's owner
             bytes32 itemId = keccak256(abi.encode(token, identifier));
-            address owner = erc721Owners[itemId];
+            address owner = itemOwners[itemId];
             if (msg.sender != owner) {
                 revert Unauthorized();
             }
@@ -475,71 +414,11 @@ contract Forward is Ownable, ReentrancyGuard {
                 }
             }
 
+            // Transfer the token
             token.safeTransferFrom(address(this), recipient, identifier);
 
-            unchecked {
-                ++i;
-            }
-        }
-    }
-
-    function withdrawERC1155s(
-        ERC1155Item[] memory items,
-        bytes[] memory data,
-        address recipient
-    ) public payable nonReentrant {
-        uint256 itemsLength = items.length;
-        for (uint256 i = 0; i < itemsLength; ) {
-            ERC1155Item memory item = items[i];
-            IERC1155 token = item.token;
-            uint256 identifier = item.identifier;
-            uint256 amount = item.amount;
-
-            // Ensure the withdrawer has enough balance
-            bytes32 itemId = keccak256(
-                abi.encode(token, identifier, msg.sender)
-            );
-            uint256 ownedAmount = erc1155Amounts[itemId];
-            if (item.amount > ownedAmount) {
-                revert Unauthorized();
-            }
-
-            // Fetch the token's price
-            uint256 price = priceOracle.getPrice(
-                address(token),
-                identifier,
-                oraclePriceWithdrawMaxAge,
-                // Oracle off-chain data
-                data[i]
-            );
-
-            // Fetch the item's royalties (relative to the token's price)
-            (
-                address[] memory royaltyRecipients,
-                uint256[] memory royaltyAmounts
-            ) = royaltyEngine.getRoyaltyView(
-                    address(token),
-                    identifier,
-                    price * amount
-                );
-
-            // Pay the royalties
-            uint256 recipientsLength = royaltyRecipients.length;
-            for (uint256 j = 0; j < recipientsLength; ) {
-                _sendPayment(royaltyRecipients[j], royaltyAmounts[j]);
-
-                unchecked {
-                    ++j;
-                }
-            }
-
-            token.safeTransferFrom(
-                address(this),
-                recipient,
-                identifier,
-                amount,
-                ""
-            );
+            // Clear internal ownership
+            itemOwners[itemId] = address(0);
 
             unchecked {
                 ++i;
@@ -547,7 +426,7 @@ contract Forward is Ownable, ReentrancyGuard {
         }
     }
 
-    function migrateERC721s(ERC721Item[] calldata items) external {
+    function migrate(Item[] calldata items) external {
         IMigrateTo localMigrateTo = migrateTo;
         if (address(localMigrateTo) == address(0)) {
             revert ZeroMigrateTo();
@@ -555,13 +434,14 @@ contract Forward is Ownable, ReentrancyGuard {
 
         uint256 length = items.length;
         for (uint256 i = 0; i < length; ) {
-            ERC721Item calldata item = items[i];
+            Item calldata item = items[i];
+
             IERC721 token = item.token;
             uint256 identifier = item.identifier;
 
-            // Ensure the migrator is the item's owner
+            // Ensure the sender is the item's owner
             bytes32 itemId = keccak256(abi.encode(token, identifier));
-            address owner = erc721Owners[itemId];
+            address owner = itemOwners[itemId];
             if (msg.sender != owner) {
                 revert Unauthorized();
             }
@@ -573,59 +453,11 @@ contract Forward is Ownable, ReentrancyGuard {
                 identifier
             );
 
-            // Process the migration
-            localMigrateTo.processMigratedERC721(token, identifier, owner);
+            // Process the migrated item
+            localMigrateTo.processMigratedItem(token, identifier, owner);
 
             // Clear internal ownership
-            erc721Owners[itemId] = address(0);
-
-            unchecked {
-                ++i;
-            }
-        }
-    }
-
-    function migrateERC1155s(ERC1155Item[] calldata items) external {
-        IMigrateTo localMigrateTo = migrateTo;
-        if (address(localMigrateTo) == address(0)) {
-            revert ZeroMigrateTo();
-        }
-
-        uint256 length = items.length;
-        for (uint256 i = 0; i < length; ) {
-            ERC1155Item calldata item = items[i];
-            IERC1155 token = item.token;
-            uint256 identifier = item.identifier;
-            uint256 amount = item.amount;
-
-            // Ensure the migrator has enough balance
-            bytes32 itemId = keccak256(
-                abi.encode(token, identifier, msg.sender)
-            );
-            uint256 ownedAmount = erc1155Amounts[itemId];
-            if (amount > ownedAmount) {
-                revert Unauthorized();
-            }
-
-            // Transfer the token to the migration contract
-            token.safeTransferFrom(
-                address(this),
-                address(localMigrateTo),
-                identifier,
-                amount,
-                ""
-            );
-
-            // Process the migration
-            localMigrateTo.processMigratedERC1155(
-                token,
-                identifier,
-                amount,
-                msg.sender
-            );
-
-            // Reduce internal ownership
-            erc1155Amounts[itemId] -= amount;
+            itemOwners[itemId] = address(0);
 
             unchecked {
                 ++i;
@@ -644,7 +476,6 @@ contract Forward is Ownable, ReentrancyGuard {
         orderHash = keccak256(
             abi.encode(
                 ORDER_TYPEHASH,
-                order.side,
                 order.itemKind,
                 maker,
                 order.token,
@@ -724,7 +555,7 @@ contract Forward is Ownable, ReentrancyGuard {
         bytes32 itemId = keccak256(
             abi.encode(listingDetails.token, listingDetails.identifier)
         );
-        if (erc721Owners[itemId] != maker) {
+        if (itemOwners[itemId] != maker) {
             revert SeaportListingIsNotFillable();
         }
 
@@ -823,38 +654,13 @@ contract Forward is Ownable, ReentrancyGuard {
         return this.onERC721Received.selector;
     }
 
-    // ERC1155
-
-    function onERC1155Received(
-        address operator,
-        address, // from
-        uint256, // id
-        uint256, // value
-        bytes calldata // data
-    ) external view returns (bytes4) {
-        if (operator != address(this)) {
-            revert Unauthorized();
-        }
-
-        if (blacklist.isBlacklisted(msg.sender)) {
-            revert Blacklisted();
-        }
-
-        return this.onERC1155Received.selector;
-    }
-
     // Internal methods
 
     function _fillBid(FillDetails memory details, uint256 identifier) internal {
         Order memory order = details.order;
 
-        // Ensure the order is a bid
-        if (order.side != Side.BID) {
-            revert OrderIsInvalid();
-        }
-
+        IERC721 token = order.token;
         address maker = order.maker;
-        address token = order.token;
 
         // Ensure the order is not expired
         if (order.expiration <= block.timestamp) {
@@ -871,192 +677,38 @@ contract Forward is Ownable, ReentrancyGuard {
         if (orderStatus.cancelled) {
             revert OrderIsCancelled();
         }
-        // Ensure the amount to fill is available
-        if (order.amount - orderStatus.filledAmount < details.fillAmount) {
+        // Ensure the order is fillable
+        if (order.amount - orderStatus.filledAmount == 0) {
             revert InsufficientAmountAvailable();
         }
 
         // Send the payment to the taker
-        WETH.transferFrom(
-            maker,
-            msg.sender,
-            order.unitPrice * details.fillAmount
-        );
+        WETH.transferFrom(maker, msg.sender, order.unitPrice);
 
-        if (uint8(order.itemKind) % 2 == 0) {
-            // Ensure ERC721 orders have a fill amount of 1
-            if (details.fillAmount != 1) {
-                revert InvalidFillAmount();
-            }
+        // Transfer the token in
+        token.safeTransferFrom(msg.sender, address(this), identifier);
 
-            // Transfer the token in
-            IERC721(token).safeTransferFrom(
-                msg.sender,
-                address(this),
-                identifier
-            );
+        // Update internal ownership
+        bytes32 itemId = keccak256(abi.encode(token, identifier));
+        itemOwners[itemId] = maker;
 
-            // Keep track of the internal ownership status
-            bytes32 itemId = keccak256(abi.encode(token, identifier));
-            erc721Owners[itemId] = maker;
-
-            // Give approval for listing if needed
-            address conduit = seaportConduit;
-            bool isApproved = IERC721(token).isApprovedForAll(
-                address(this),
-                conduit
-            );
-            if (!isApproved) {
-                IERC721(token).setApprovalForAll(conduit, true);
-            }
-        } else {
-            // Ensure ERC1155 orders have a fill amount of at least 1
-            if (details.fillAmount < 1) {
-                revert InvalidFillAmount();
-            }
-
-            // Transfer the token in
-            IERC1155(token).safeTransferFrom(
-                msg.sender,
-                address(this),
-                identifier,
-                details.fillAmount,
-                ""
-            );
-
-            // Keep track of the internal ownership status
-            bytes32 itemId = keccak256(abi.encode(token, identifier, maker));
-            erc1155Amounts[itemId] += details.fillAmount;
-
-            // Give approval for listing if needed
-            address conduit = seaportConduit;
-            bool isApproved = IERC1155(token).isApprovedForAll(
-                address(this),
-                conduit
-            );
-            if (!isApproved) {
-                IERC1155(token).setApprovalForAll(conduit, true);
-            }
+        // Give approval for listing if needed
+        address conduit = seaportConduit;
+        bool isApproved = token.isApprovedForAll(address(this), conduit);
+        if (!isApproved) {
+            token.setApprovalForAll(conduit, true);
         }
 
         // Update the order's filled amount
-        orderStatuses[orderHash].filledAmount += details.fillAmount;
+        orderStatuses[orderHash].filledAmount += 1;
 
         emit OrderFilled(
             orderHash,
-            order.side,
-            order.itemKind,
             maker,
             msg.sender,
-            token,
+            address(token),
             identifier,
-            order.unitPrice,
-            details.fillAmount
-        );
-    }
-
-    function _fillListing(FillDetails memory details) internal {
-        Order memory order = details.order;
-
-        // Ensure the order is a listing
-        if (order.side != Side.LISTING) {
-            revert OrderIsInvalid();
-        }
-
-        address maker = order.maker;
-        address token = order.token;
-        uint128 fillAmount = details.fillAmount;
-
-        // Ensure the order is not expired
-        if (order.expiration <= block.timestamp) {
-            revert OrderIsExpired();
-        }
-
-        // Ensure the maker's signature is valid
-        bytes32 orderHash = getOrderHash(order);
-        bytes32 eip712Hash = _getEIP712Hash(orderHash);
-        _verifySignature(maker, eip712Hash, details.signature);
-
-        OrderStatus memory orderStatus = orderStatuses[orderHash];
-        // Ensure the order is not cancelled
-        if (orderStatus.cancelled) {
-            revert OrderIsCancelled();
-        }
-        // Ensure the amount to fill is available
-        if (order.amount - orderStatus.filledAmount < fillAmount) {
-            revert InsufficientAmountAvailable();
-        }
-
-        // Send the payment to the maker
-        _sendPayment(order.maker, order.unitPrice * fillAmount);
-
-        uint256 identifier = order.identifierOrCriteria;
-        if (uint8(order.itemKind) % 2 == 0) {
-            // Ensure ERC721 orders have a fill amount of 1
-            if (fillAmount != 1) {
-                revert InvalidFillAmount();
-            }
-
-            bytes32 itemId = keccak256(abi.encode(token, identifier));
-            if (order.itemKind == ItemKind.ERC721) {
-                // Ensure the maker internally owns the token
-                if (erc721Owners[itemId] != maker) {
-                    revert Unauthorized();
-                }
-            } else {
-                // Transfer the token in
-                IERC721(token).safeTransferFrom(
-                    maker,
-                    address(this),
-                    identifier
-                );
-            }
-
-            // Update the internal ownership status
-            erc721Owners[itemId] = msg.sender;
-        } else {
-            // Ensure ERC1155 orders have a fill amount of at least 1
-            if (fillAmount < 1) {
-                revert InvalidFillAmount();
-            }
-
-            if (order.itemKind == ItemKind.ERC1155) {
-                // Subtract the filled amount from the maker's internal balance
-                bytes32 makerItemId = keccak256(
-                    abi.encode(token, identifier, maker)
-                );
-                erc1155Amounts[makerItemId] -= fillAmount;
-            } else {
-                // Transfer the tokens in
-                IERC1155(token).safeTransferFrom(
-                    maker,
-                    address(this),
-                    identifier,
-                    fillAmount,
-                    ""
-                );
-            }
-
-            // Update the internal ownership statuses
-            bytes32 takerItemId = keccak256(
-                abi.encode(token, identifier, msg.sender)
-            );
-            erc1155Amounts[takerItemId] += fillAmount;
-        }
-
-        // Update the order's filled amount
-        orderStatuses[orderHash].filledAmount += fillAmount;
-
-        emit OrderFilled(
-            orderHash,
-            order.side,
-            order.itemKind,
-            maker,
-            msg.sender,
-            token,
-            identifier,
-            order.unitPrice,
-            fillAmount
+            order.unitPrice
         );
     }
 
