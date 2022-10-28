@@ -5,7 +5,7 @@ import {ReservoirOracle} from "oracle/ReservoirOracle.sol";
 
 // In order to enforce the proper payout of royalties, we need an oracle
 // attesting the price of the token for which royalties are paid. It can
-// the floor price or the appraised price (or even something else).
+// be the floor price or the appraised price (or even something else).
 contract PriceOracle is ReservoirOracle {
     // Constructor
 
