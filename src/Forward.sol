@@ -29,7 +29,7 @@ contract Forward is Ownable, ReentrancyGuard {
         IERC721 token;
         uint256 identifierOrCriteria;
         uint256 unitPrice;
-        // The order's amount is a `uint128` instead of a `uint256` so
+        // The amount has a type of `uint128` instead of `uint256` so
         // that the order status can fit within a single storage slot
         uint128 amount;
         uint256 salt;
@@ -79,7 +79,6 @@ contract Forward is Ownable, ReentrancyGuard {
 
     error InsufficientAmountAvailable();
     error InvalidCriteriaProof();
-    error InvalidFillAmount();
     error InvalidSignature();
 
     error Blacklisted();
@@ -94,7 +93,7 @@ contract Forward is Ownable, ReentrancyGuard {
 
     // Events
 
-    event BlacklistUpdated(address blacklist);
+    event BlacklistUpdated(address newBlacklist);
     event PriceOracleUpdated(address newPriceOracle);
     event RoyaltyEngineUpdated(address newRoyaltyEngine);
 
@@ -166,7 +165,7 @@ contract Forward is Ownable, ReentrancyGuard {
     // Mapping from wallet to current counter
     mapping(address => uint256) public counters;
 
-    // Mapping from item id (eg. `keccak256(abi.encode(token, identifier))) to owner
+    // Mapping from item id (`keccak256(abi.encode(token, identifier))) to owner
     mapping(bytes32 => address) public itemOwners;
 
     // Constructor
@@ -414,7 +413,7 @@ contract Forward is Ownable, ReentrancyGuard {
                 }
             }
 
-            // Transfer the token
+            // Transfer the token out
             token.safeTransferFrom(address(this), recipient, identifier);
 
             // Clear internal ownership
@@ -621,6 +620,7 @@ contract Forward is Ownable, ReentrancyGuard {
             orderHash = SEAPORT.getOrderHash(order);
         }
 
+        // Ensure the order was properly constructed
         if (
             digest !=
             keccak256(
@@ -630,6 +630,7 @@ contract Forward is Ownable, ReentrancyGuard {
             revert SeaportListingIsInvalid();
         }
 
+        // Ensure the underlying order was signed by the item's owner
         _verifySignature(maker, digest, orderSignature);
 
         return this.isValidSignature.selector;
