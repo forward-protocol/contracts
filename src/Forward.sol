@@ -402,7 +402,7 @@ contract Forward is Ownable, ReentrancyGuard {
             revert OrderIsCancelled();
         }
         // Ensure the order is fillable
-        if (order.amount - orderStatus.filledAmount >= fillAmount) {
+        if (order.amount - orderStatus.filledAmount < fillAmount) {
             revert InsufficientAmountAvailable();
         }
 
