@@ -8,7 +8,7 @@ import {IERC721} from "openzeppelin/token/ERC721/IERC721.sol";
 import {Strings} from "openzeppelin/utils/Strings.sol";
 import {ReservoirOracle} from "oracle/ReservoirOracle.sol";
 
-import {Blacklist} from "../src/Blacklist.sol";
+import {OptOutList} from "../src/OptOutList.sol";
 import {Forward} from "../src/Forward.sol";
 import {PriceOracle} from "../src/PriceOracle.sol";
 import {Vault} from "../src/Vault.sol";
@@ -20,7 +20,7 @@ import {IWETH} from "../src/interfaces/external/IWETH.sol";
 contract ForwardTest is Test {
     using stdJson for string;
 
-    Blacklist internal blacklist;
+    OptOutList internal optOutList;
     PriceOracle internal priceOracle;
     IRoyaltyEngine internal royaltyEngine;
 
@@ -50,7 +50,7 @@ contract ForwardTest is Test {
         vm.warp(block.timestamp + 60);
 
         // Setup utility contracts
-        blacklist = new Blacklist();
+        optOutList = new OptOutList();
         priceOracle = new PriceOracle(
             0x32dA57E736E05f75aa4FaE2E9Be60FD904492726
         );
@@ -60,7 +60,7 @@ contract ForwardTest is Test {
 
         // Setup protocol contract
         forward = new Forward(
-            address(blacklist),
+            address(optOutList),
             address(priceOracle),
             address(royaltyEngine)
         );
@@ -599,18 +599,18 @@ contract ForwardTest is Test {
         require(bayc.ownerOf(baycIdentifier1) == alice);
     }
 
-    function testBlacklist() external {
+    function testOptOutList() external {
         // Create vault
         vm.prank(baycOwner);
         Vault vault = forward.createVault();
 
-        // Blacklist
-        vm.prank(blacklist.owner());
-        blacklist.adminSetBlacklistStatus(address(bayc), true);
+        // Mark collection as opted-out
+        vm.prank(optOutList.owner());
+        optOutList.adminSetOptOutStatus(address(bayc), true);
 
-        // Depositing will fail if the token is blacklisted
+        // Depositing will fail if the token's collection is opted-out of Forward
         vm.startPrank(baycOwner);
-        vm.expectRevert(Vault.Blacklisted.selector);
+        vm.expectRevert(Vault.CollectionOptedOut.selector);
         bayc.safeTransferFrom(baycOwner, address(vault), baycIdentifier1);
         vm.stopPrank();
     }

@@ -13,7 +13,7 @@ import {Vault} from "./Vault.sol";
 
 import {IRoyaltyEngine} from "./interfaces/external/IRoyaltyEngine.sol";
 import {IConduitController} from "./interfaces/external/ISeaport.sol";
-import {IBlacklist} from "./interfaces/IBlacklist.sol";
+import {IOptOutList} from "./interfaces/IOptOutList.sol";
 import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
 
 contract Forward is Ownable, ReentrancyGuard {
@@ -70,12 +70,11 @@ contract Forward is Ownable, ReentrancyGuard {
     error InvalidFillAmount();
     error InvalidSignature();
 
-    error Blacklisted();
     error Unauthorized();
 
     // Events
 
-    event BlacklistUpdated(address newBlacklist);
+    event OptOutListUpdated(address newOptOutList);
     event PriceOracleUpdated(address newPriceOracle);
     event RoyaltyEngineUpdated(address newRoyaltyEngine);
     event MinPriceBpsUpdated(uint256 newMinPriceBps);
@@ -114,7 +113,7 @@ contract Forward is Ownable, ReentrancyGuard {
 
     // Public fields
 
-    IBlacklist public blacklist;
+    IOptOutList public optOutList;
     IPriceOracle public priceOracle;
     IRoyaltyEngine public royaltyEngine;
 
@@ -145,11 +144,11 @@ contract Forward is Ownable, ReentrancyGuard {
     // Constructor
 
     constructor(
-        address _blacklist,
+        address _optOutList,
         address _priceOracle,
         address _royaltyEngine
     ) {
-        blacklist = IBlacklist(_blacklist);
+        optOutList = IOptOutList(_optOutList);
         priceOracle = IPriceOracle(_priceOracle);
         royaltyEngine = IRoyaltyEngine(_royaltyEngine);
 
@@ -208,9 +207,9 @@ contract Forward is Ownable, ReentrancyGuard {
 
     // Restricted methods
 
-    function updateBlacklist(address newBlacklist) external onlyOwner {
-        blacklist = IBlacklist(newBlacklist);
-        emit BlacklistUpdated(newBlacklist);
+    function updateOptOutList(address newOptOutList) external onlyOwner {
+        optOutList = IOptOutList(newOptOutList);
+        emit OptOutListUpdated(newOptOutList);
     }
 
     function updatePriceOracle(address newPriceOracle) external onlyOwner {

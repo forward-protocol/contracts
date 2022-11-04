@@ -52,7 +52,7 @@ contract Vault {
     error SeaportListingIsUnderpriced();
     error SeaportListingRoyaltiesAreIncorrect();
 
-    error Blacklisted();
+    error CollectionOptedOut();
     error InvalidSignature();
     error Unauthorized();
     error UnsuccessfulPayment();
@@ -366,8 +366,8 @@ contract Vault {
         bytes calldata // data
     ) external returns (bytes4) {
         IERC721 token = IERC721(msg.sender);
-        if (forward.blacklist().isBlacklisted(address(token))) {
-            revert Blacklisted();
+        if (forward.optOutList().optedOut(address(token))) {
+            revert CollectionOptedOut();
         }
 
         address conduit = forward.seaportConduit();
@@ -391,8 +391,8 @@ contract Vault {
         bytes calldata // data
     ) external returns (bytes4) {
         IERC1155 token = IERC1155(msg.sender);
-        if (forward.blacklist().isBlacklisted(address(token))) {
-            revert Blacklisted();
+        if (forward.optOutList().optedOut(address(token))) {
+            revert CollectionOptedOut();
         }
 
         address conduit = forward.seaportConduit();
