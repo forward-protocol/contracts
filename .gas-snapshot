@@ -1,0 +1,8 @@
+ForwardTest:testCancel() (gas: 272812)
+ForwardTest:testDeposit() (gas: 543659)
+ForwardTest:testFillCriteriaBid() (gas: 871239)
+ForwardTest:testFillSeaportListing() (gas: 590376)
+ForwardTest:testFillSingleTokenBid() (gas: 441107)
+ForwardTest:testIncrementCounter() (gas: 267531)
+ForwardTest:testOptOutList() (gas: 275531)
+ForwardTest:testPartiallyFillBid() (gas: 562247)
