@@ -60,6 +60,16 @@ contract Vault {
     error Unauthorized();
     error UnsuccessfulPayment();
 
+    // Events
+
+    event RoyaltyPaid(
+        address token,
+        uint256 identifier,
+        uint256 amount,
+        uint256 price,
+        uint256 royalty
+    );
+
     // Public constants
 
     ISeaport public constant SEAPORT =
@@ -138,15 +148,26 @@ contract Vault {
                         price
                     );
 
+                uint256 totalRoyaltyAmount;
+
                 // Pay the royalties
                 uint256 recipientsLength = royaltyRecipients.length;
                 for (uint256 j = 0; j < recipientsLength; ) {
                     _sendPayment(royaltyRecipients[j], royaltyAmounts[j]);
+                    totalRoyaltyAmount += royaltyAmounts[j];
 
                     unchecked {
                         ++j;
                     }
                 }
+
+                emit RoyaltyPaid(
+                    address(token),
+                    identifier,
+                    1,
+                    price,
+                    totalRoyaltyAmount
+                );
             }
 
             // Transfer the token out
@@ -201,15 +222,26 @@ contract Vault {
                         price * amount
                     );
 
+                uint256 totalRoyaltyAmount;
+
                 // Pay the royalties
                 uint256 recipientsLength = royaltyRecipients.length;
                 for (uint256 j = 0; j < recipientsLength; ) {
                     _sendPayment(royaltyRecipients[j], royaltyAmounts[j]);
+                    totalRoyaltyAmount += royaltyAmounts[j];
 
                     unchecked {
                         ++j;
                     }
                 }
+
+                emit RoyaltyPaid(
+                    address(token),
+                    identifier,
+                    amount,
+                    price,
+                    totalRoyaltyAmount
+                );
             }
 
             // Transfer the token out
