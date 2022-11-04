@@ -71,7 +71,6 @@ contract Forward is Ownable, ReentrancyGuard {
     error InvalidSignature();
 
     error Blacklisted();
-    error PaymentFailed();
     error Unauthorized();
 
     // Events

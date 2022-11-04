@@ -52,6 +52,7 @@ contract Vault {
     error SeaportListingIsUnderpriced();
     error SeaportListingRoyaltiesAreIncorrect();
 
+    error Blacklisted();
     error InvalidSignature();
     error Unauthorized();
     error UnsuccessfulPayment();
@@ -93,7 +94,7 @@ contract Vault {
         ERC721Item[] calldata items,
         bytes[] calldata oracleData,
         address recipient
-    ) public {
+    ) public payable {
         // Only the owner can withdraw tokens
         if (msg.sender != owner) {
             revert Unauthorized();
@@ -148,7 +149,7 @@ contract Vault {
         ERC1155Item[] calldata items,
         bytes[] calldata oracleData,
         address recipient
-    ) public {
+    ) public payable {
         // Only the owner can withdraw tokens
         if (msg.sender != owner) {
             revert Unauthorized();
@@ -365,6 +366,10 @@ contract Vault {
         bytes calldata // data
     ) external returns (bytes4) {
         IERC721 token = IERC721(msg.sender);
+        if (forward.blacklist().isBlacklisted(address(token))) {
+            revert Blacklisted();
+        }
+
         address conduit = forward.seaportConduit();
 
         // Approve the token for listing if needed
@@ -386,6 +391,10 @@ contract Vault {
         bytes calldata // data
     ) external returns (bytes4) {
         IERC1155 token = IERC1155(msg.sender);
+        if (forward.blacklist().isBlacklisted(address(token))) {
+            revert Blacklisted();
+        }
+
         address conduit = forward.seaportConduit();
 
         // Approve the token for listing if needed

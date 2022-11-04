@@ -83,7 +83,7 @@ contract ForwardTest is Test {
         args[
             2
         ] = string.concat(
-            "curl -s https://api.reservoir.tools/oracle/collections/floor-ask/v4?kind=spot&twapSeconds=0&token=",
+            "curl -s https://api.reservoir.tools/oracle/collections/floor-ask/v4?token=",
             Strings.toHexString(uint256(uint160(token))),
             ":",
             Strings.toString(identifier)
@@ -395,7 +395,7 @@ contract ForwardTest is Test {
         );
     }
 
-    function testPartialBidFilling() external {
+    function testPartiallyFillBid() external {
         // Create vault
         vm.prank(alice);
         forward.createVault();
@@ -440,225 +440,178 @@ contract ForwardTest is Test {
         require(filledAmount == 2);
     }
 
-    // function testFillSeaportListing() public {
-    //     vm.prank(tokenOwner);
-    //     token.transferFrom(tokenOwner, bob, tokenIdentifier);
+    function testFillSeaportListing() public {
+        // Create vault
+        vm.prank(alice);
+        Vault vault = forward.createVault();
 
-    //     uint256 bidUnitPrice = 1 ether;
-    //     (
-    //         Forward.Order memory forwardOrder,
-    //         bytes memory signature
-    //     ) = generateForwardBid(
-    //             alicePk,
-    //             token,
-    //             tokenIdentifier,
-    //             bidUnitPrice,
-    //             1
-    //         );
+        // Deposit token to vault
+        vm.prank(baycOwner);
+        bayc.safeTransferFrom(baycOwner, address(vault), baycIdentifier1);
 
-    //     // Fill bid
-    //     vm.startPrank(bob);
-    //     token.setApprovalForAll(address(forward), true);
-    //     forward.fillBid(
-    //         Forward.FillDetails({order: forwardOrder, signature: signature})
-    //     );
-    //     vm.stopPrank();
+        // Construct Seaport listing
+        uint256 listingPrice = 70 ether;
+        ISeaport.Order memory seaportOrder = generateSeaportListing(
+            alicePk,
+            address(bayc),
+            baycIdentifier1,
+            listingPrice
+        );
 
-    //     uint256 listingPrice = 70 ether;
-    //     ISeaport.Order memory seaportOrder = generateSeaportListing(
-    //         alicePk,
-    //         address(token),
-    //         tokenIdentifier,
-    //         listingPrice
-    //     );
+        // Save the maker's balance before filling
+        uint256 aliceETHBalanceBefore = alice.balance;
 
-    //     uint256 aliceETHBalanceBefore = alice.balance;
+        // Fill listing
+        vm.startPrank(carol);
+        vault.SEAPORT().fulfillOrder{value: listingPrice}(
+            seaportOrder,
+            bytes32(0)
+        );
+        vm.stopPrank();
 
-    //     // Fill listing
-    //     vm.startPrank(carol);
-    //     forward.SEAPORT().fulfillOrder{value: listingPrice}(
-    //         seaportOrder,
-    //         bytes32(0)
-    //     );
-    //     vm.stopPrank();
+        // Save the maker's balance after filling
+        uint256 aliceETHBalanceAfter = alice.balance;
 
-    //     uint256 aliceETHBalanceAfter = alice.balance;
+        // Fetch the royalties to be paid relative to the listing's price
+        uint256 totalRoyaltyAmount = getTotalRoyaltyAmount(
+            address(bayc),
+            baycIdentifier1,
+            listingPrice
+        );
 
-    //     // Fetch the royalties to be paid relative to the listing's price
-    //     uint256 totalRoyaltyAmount = getTotalRoyaltyAmount(
-    //         address(token),
-    //         tokenIdentifier,
-    //         listingPrice
-    //     );
+        // Ensure the maker got the payment from the listing
+        require(
+            aliceETHBalanceAfter - aliceETHBalanceBefore ==
+                listingPrice - totalRoyaltyAmount
+        );
+    }
 
-    //     // Ensure the taker got the payment from the listing
-    //     require(
-    //         aliceETHBalanceAfter - aliceETHBalanceBefore ==
-    //             listingPrice - totalRoyaltyAmount
-    //     );
-    // }
+    function testIncrementCounter() public {
+        // Create vault
+        vm.prank(alice);
+        forward.createVault();
 
-    // function testCounterIncrement() public {
-    //     vm.prank(tokenOwner);
-    //     token.transferFrom(tokenOwner, bob, tokenIdentifier);
+        // Create single-token bid
+        uint256 bidUnitPrice = 1 ether;
+        (
+            Forward.Order memory forwardOrder,
+            bytes memory signature
+        ) = generateForwardBid(
+                alicePk,
+                bayc,
+                baycIdentifier1,
+                bidUnitPrice,
+                1
+            );
 
-    //     uint256 bidUnitPrice = 1 ether;
-    //     (
-    //         Forward.Order memory forwardOrder,
-    //         bytes memory signature
-    //     ) = generateForwardBid(
-    //             alicePk,
-    //             token,
-    //             tokenIdentifier,
-    //             bidUnitPrice,
-    //             1
-    //         );
+        // Increment counter
+        vm.prank(alice);
+        forward.incrementCounter();
 
-    //     vm.prank(alice);
-    //     forward.incrementCounter();
+        // Orders signed with an old counter got invalidated
+        vm.startPrank(baycOwner);
+        bayc.setApprovalForAll(address(forward), true);
+        vm.expectRevert(Forward.InvalidSignature.selector);
+        forward.fillBid(
+            Forward.FillDetails({order: forwardOrder, signature: signature, fillAmount: 1})
+        );
+        vm.stopPrank();
+    }
 
-    //     // Incrementing the counter invalidates any previously signed orders
-    //     vm.startPrank(bob);
-    //     token.setApprovalForAll(address(forward), true);
-    //     vm.expectRevert(Forward.InvalidSignature.selector);
-    //     forward.fillBid(
-    //         Forward.FillDetails({order: forwardOrder, signature: signature})
-    //     );
-    //     vm.stopPrank();
-    // }
+    function testCancel() external {
+        // Create vault
+        vm.prank(alice);
+        forward.createVault();
 
-    // function testCancel() external {
-    //     vm.prank(tokenOwner);
-    //     token.transferFrom(tokenOwner, bob, tokenIdentifier);
+        // Create single-token bid
+        uint256 bidUnitPrice = 1 ether;
+        (
+            Forward.Order memory forwardOrder,
+            bytes memory signature
+        ) = generateForwardBid(
+                alicePk,
+                bayc,
+                baycIdentifier1,
+                bidUnitPrice,
+                1
+            );
 
-    //     uint256 bidUnitPrice = 1 ether;
-    //     (
-    //         Forward.Order memory forwardOrder,
-    //         bytes memory signature
-    //     ) = generateForwardBid(
-    //             alicePk,
-    //             token,
-    //             tokenIdentifier,
-    //             bidUnitPrice,
-    //             1
-    //         );
+        // Prepare orders to cancel
+        Forward.Order[] memory ordersToCancel = new Forward.Order[](1);
+        ordersToCancel[0] = forwardOrder;
 
-    //     Forward.Order[] memory ordersToCancel = new Forward.Order[](1);
-    //     ordersToCancel[0] = forwardOrder;
+        // Cancel
+        vm.prank(alice);
+        forward.cancel(ordersToCancel);
 
-    //     vm.prank(alice);
-    //     forward.cancel(ordersToCancel);
+        // Cannot fill cancelled orders
+        vm.startPrank(baycOwner);
+        bayc.setApprovalForAll(address(forward), true);
+        vm.expectRevert(Forward.OrderIsCancelled.selector);
+        forward.fillBid(
+            Forward.FillDetails({order: forwardOrder, signature: signature, fillAmount: 1})
+        );
+        vm.stopPrank();
+    }
 
-    //     // Cannot fill cancelled orders
-    //     vm.startPrank(bob);
-    //     token.setApprovalForAll(address(forward), true);
-    //     vm.expectRevert(Forward.OrderIsCancelled.selector);
-    //     forward.fillBid(
-    //         Forward.FillDetails({order: forwardOrder, signature: signature})
-    //     );
-    //     vm.stopPrank();
-    // }
+    function testDeposit() external {
+        // Create vault
+        vm.prank(alice);
+        Vault vault = forward.createVault();
 
-    // function testDepositAndWithdraw() external {
-    //     Forward.Item[] memory items = new Forward.Item[](1);
-    //     items[0] = Forward.Item({token: token, identifier: tokenIdentifier});
+        // Deposit token to vault
+        vm.prank(baycOwner);
+        bayc.safeTransferFrom(baycOwner, address(vault), baycIdentifier1);
 
-    //     // Deposit
-    //     vm.startPrank(tokenOwner);
-    //     token.setApprovalForAll(address(forward), true);
-    //     forward.deposit(items);
-    //     vm.stopPrank();
+        // Prepare withdraw data
+        Vault.ERC721Item[] memory items = new Vault.ERC721Item[](1);
+        items[0] = Vault.ERC721Item(bayc, baycIdentifier1);
+        bytes[] memory data = new bytes[](1);
+        data[0] = fetchOracleData(address(bayc), baycIdentifier1);
 
-    //     // Ensure the item is owned by the depositor within the protocol
-    //     require(token.ownerOf(tokenIdentifier) == address(forward));
-    //     require(
-    //         forward.itemOwners(keccak256(abi.encode(token, tokenIdentifier))) ==
-    //             tokenOwner
-    //     );
+        // When withdrawing, royalties must be paid
+        vm.startPrank(alice);
+        vm.expectRevert(Vault.UnsuccessfulPayment.selector);
+        vault.withdrawERC721s(items, data, alice);
+        vm.stopPrank();
 
-    //     bytes[] memory data = new bytes[](1);
-    //     data[0] = fetchOracleOffChainData();
+        // Extract the price from the oracle message
+        uint256 price = priceOracle.getPrice(
+            address(bayc),
+            baycIdentifier1,
+            1 minutes,
+            data[0]
+        );
 
-    //     // Must pay royalties when withdrawing
-    //     vm.startPrank(tokenOwner);
-    //     vm.expectRevert(Forward.PaymentFailed.selector);
-    //     forward.withdraw(items, data, tokenOwner);
-    //     vm.stopPrank();
+        // Compute the royalties to be paid relative to the token's price
+        uint256 totalRoyaltyAmount = getTotalRoyaltyAmount(
+            address(bayc),
+            baycIdentifier1,
+            price
+        );
 
-    //     uint256 price = priceOracle.getPrice(
-    //         address(token),
-    //         tokenIdentifier,
-    //         1 minutes,
-    //         data[0]
-    //     );
+        // Withdraw
+        vm.startPrank(alice);
+        vault.withdrawERC721s{value: totalRoyaltyAmount}(items, data, alice);
+        vm.stopPrank();
 
-    //     // Fetch the royalties to be paid relative to the token's price
-    //     uint256 totalRoyaltyAmount = getTotalRoyaltyAmount(
-    //         address(token),
-    //         tokenIdentifier,
-    //         price
-    //     );
+        // Ensure the token was successfully withdrawn
+        require(bayc.ownerOf(baycIdentifier1) == alice);
+    }
 
-    //     // Withdraw
-    //     vm.startPrank(tokenOwner);
-    //     forward.withdraw{value: totalRoyaltyAmount}(items, data, tokenOwner);
-    //     vm.stopPrank();
+    function testBlacklist() external {
+        // Create vault
+        vm.prank(baycOwner);
+        Vault vault = forward.createVault();
 
-    //     // Ensure the token is now in the withdrawer's wallet
-    //     require(token.ownerOf(tokenIdentifier) == tokenOwner);
-    // }
+        // Blacklist
+        vm.prank(blacklist.owner());
+        blacklist.adminSetBlacklistStatus(address(bayc), true);
 
-    // function testBlacklist() external {
-    //     // Blacklist
-    //     vm.prank(blacklist.owner());
-    //     blacklist.adminSetBlacklistStatus(address(token), true);
-
-    //     Forward.Item[] memory items = new Forward.Item[](1);
-    //     items[0] = Forward.Item({token: token, identifier: tokenIdentifier});
-
-    //     // Deposit will fail if the token is blacklisted
-    //     vm.startPrank(tokenOwner);
-    //     token.setApprovalForAll(address(forward), true);
-    //     vm.expectRevert(Forward.Blacklisted.selector);
-    //     forward.deposit(items);
-    //     vm.stopPrank();
-    // }
-
-    // function testMigrate() external {
-    //     Forward.Item[] memory items = new Forward.Item[](1);
-    //     items[0] = Forward.Item({token: token, identifier: tokenIdentifier});
-
-    //     // Deposit
-    //     vm.startPrank(tokenOwner);
-    //     token.setApprovalForAll(address(forward), true);
-    //     forward.deposit(items);
-    //     vm.stopPrank();
-
-    //     IMigrateTo migrateTo = new DummyMigrateTo(address(forward));
-
-    //     // Only the protocol should be able to trigger migrations
-    //     vm.prank(tokenOwner);
-    //     vm.expectRevert(DummyMigrateTo.Unauthorized.selector);
-    //     migrateTo.processMigratedItem(token, tokenIdentifier, tokenOwner);
-
-    //     // Start migration
-    //     vm.prank(forward.owner());
-    //     forward.updateMigrateTo(address(migrateTo));
-
-    //     // Migrate
-    //     vm.prank(tokenOwner);
-    //     forward.migrate(items);
-
-    //     // Ensure the item was migrate successfully
-    //     require(token.ownerOf(tokenIdentifier) == address(migrateTo));
-    //     require(
-    //         forward.itemOwners(keccak256(abi.encode(token, tokenIdentifier))) ==
-    //             address(0)
-    //     );
-
-    //     // Migrating a second time will fail
-    //     vm.prank(tokenOwner);
-    //     vm.expectRevert(Forward.Unauthorized.selector);
-    //     forward.migrate(items);
-    // }
+        // Depositing will fail if the token is blacklisted
+        vm.startPrank(baycOwner);
+        vm.expectRevert(Vault.Blacklisted.selector);
+        bayc.safeTransferFrom(baycOwner, address(vault), baycIdentifier1);
+        vm.stopPrank();
+    }
 }
