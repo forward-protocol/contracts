@@ -53,6 +53,8 @@ contract Vault {
     error SeaportListingRoyaltiesAreIncorrect();
 
     error CollectionOptedOut();
+    error TokenDepositIsTooOld();
+
     error InvalidSignature();
     error Unauthorized();
     error UnsuccessfulPayment();
@@ -69,6 +71,9 @@ contract Vault {
 
     Forward public forward;
     address public owner;
+
+    // Mapping from item id to its time of deposit into the vault
+    mapping(bytes32 => uint256) public depositTime;
 
     // Constructor
 
@@ -270,11 +275,24 @@ contract Vault {
         uint256 identifier = listingDetails.identifier;
         uint256 amount = listingDetails.amount;
 
+        // Ensure the token's deposit time is not too far in the past
+        bytes32 itemId = keccak256(abi.encode(token, identifier));
+        uint256 timeOfDeposit = depositTime[itemId];
+        if (block.timestamp - timeOfDeposit > forward.listTimeLimit()) {
+            revert TokenDepositIsTooOld();
+        }
+
+        // Ensure the listing's validity time is not more than the oracle's price max age
+        uint256 oraclePriceListMaxAge = protocol.oraclePriceListMaxAge();
+        if (listingDetails.endTime - listingDetails.startTime > oraclePriceListMaxAge) {
+            revert SeaportListingIsInvalid();
+        }
+
         // Fetch the token's price
         uint256 price = protocol.priceOracle().getPrice(
             token,
             identifier,
-            protocol.oraclePriceListMaxAge(),
+            oraclePriceListMaxAge,
             oracleData
         );
 
@@ -362,13 +380,17 @@ contract Vault {
     function onERC721Received(
         address, // operator
         address, // from
-        uint256, // tokenId
+        uint256 tokenId,
         bytes calldata // data
     ) external returns (bytes4) {
         IERC721 token = IERC721(msg.sender);
         if (forward.optOutList().optedOut(address(token))) {
             revert CollectionOptedOut();
         }
+
+        // Update the item's deposit time
+        bytes32 itemId = keccak256(abi.encode(address(token), tokenId));
+        depositTime[itemId] = block.timestamp;
 
         address conduit = forward.seaportConduit();
 
@@ -386,7 +408,7 @@ contract Vault {
     function onERC1155Received(
         address, // operator
         address, // from
-        uint256, // id
+        uint256 id,
         uint256, // value
         bytes calldata // data
     ) external returns (bytes4) {
@@ -394,6 +416,10 @@ contract Vault {
         if (forward.optOutList().optedOut(address(token))) {
             revert CollectionOptedOut();
         }
+
+        // Update the item's deposit time
+        bytes32 itemId = keccak256(abi.encode(address(token), id));
+        depositTime[itemId] = block.timestamp;
 
         address conduit = forward.seaportConduit();
 

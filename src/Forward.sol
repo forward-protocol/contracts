@@ -77,6 +77,8 @@ contract Forward is Ownable, ReentrancyGuard {
     event OptOutListUpdated(address newOptOutList);
     event PriceOracleUpdated(address newPriceOracle);
     event RoyaltyEngineUpdated(address newRoyaltyEngine);
+
+    event ListTimeLimitUpdated(uint256 newListTimeLimit);
     event MinPriceBpsUpdated(uint256 newMinPriceBps);
     event OraclePriceMaxAgeUpdated(
         uint256 newListMaxAge,
@@ -117,6 +119,10 @@ contract Forward is Ownable, ReentrancyGuard {
     IPriceOracle public priceOracle;
     IRoyaltyEngine public royaltyEngine;
 
+    // There is a time limit for listing from the vault and once that passes,
+    // the only way to withdraw a token from the vault is by paying royalties
+    uint256 public listTimeLimit;
+
     // To avoid the possbility of evading royalties (by withdrawing via
     // private listing to a different own wallet for a zero or very low
     // price) we enforce the price of every outgoing Seaport listing to
@@ -152,6 +158,7 @@ contract Forward is Ownable, ReentrancyGuard {
         priceOracle = IPriceOracle(_priceOracle);
         royaltyEngine = IRoyaltyEngine(_royaltyEngine);
 
+        listTimeLimit = 30 days;
         minPriceBps = 8000;
 
         oraclePriceWithdrawMaxAge = 30 minutes;
@@ -220,6 +227,11 @@ contract Forward is Ownable, ReentrancyGuard {
     function updateRoyaltyEngine(address newRoyaltyEngine) external onlyOwner {
         royaltyEngine = IRoyaltyEngine(newRoyaltyEngine);
         emit RoyaltyEngineUpdated(newRoyaltyEngine);
+    }
+
+    function updateListTimeLimit(uint256 newListTimeLimit) external onlyOwner {
+        listTimeLimit = newListTimeLimit;
+        emit ListTimeLimitUpdated(newListTimeLimit);
     }
 
     function updateMinPriceBps(uint256 newMinPriceBps) external onlyOwner {
