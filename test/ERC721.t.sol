@@ -5,6 +5,7 @@ import {stdJson} from "forge-std/StdJson.sol";
 import {Test} from "forge-std/Test.sol";
 import {Merkle} from "murky/Merkle.sol";
 import {IERC721} from "openzeppelin/token/ERC721/IERC721.sol";
+import {Strings} from "openzeppelin/utils/Strings.sol";
 import {ReservoirOracle} from "oracle/ReservoirOracle.sol";
 
 import {Blacklist} from "../src/Blacklist.sol";
@@ -29,10 +30,11 @@ contract ForwardTest is Test {
     IWETH internal weth = IWETH(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
 
     // Setup token with on-chain royalties
-    IERC721 internal token =
+    IERC721 internal bayc =
         IERC721(0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D);
-    address internal tokenOwner = 0x8AD272Ac86c6C88683d9a60eb8ED57E6C304bB0C;
-    uint256 internal tokenIdentifier = 7090;
+    address internal baycOwner = 0x8AD272Ac86c6C88683d9a60eb8ED57E6C304bB0C;
+    uint256 internal baycIdentifier1 = 7090;
+    uint256 internal baycIdentifier2 = 5977;
 
     // Setup wallets
     uint256 internal alicePk = uint256(0x01);
@@ -73,14 +75,19 @@ contract ForwardTest is Test {
 
     // Helper methods
 
-    function fetchOracleData() internal returns (bytes memory) {
+    function fetchOracleData(address token, uint256 identifier) internal returns (bytes memory) {
         // Fetch oracle message for the token's price
         string[] memory args = new string[](3);
         args[0] = "bash";
         args[1] = "-c";
         args[
             2
-        ] = "curl -s https://api.reservoir.tools/oracle/collections/floor-ask/v4?token=0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d:7090&kind=spot&twapSeconds=0";
+        ] = string.concat(
+            "curl -s https://api.reservoir.tools/oracle/collections/floor-ask/v4?kind=spot&twapSeconds=0&token=",
+            Strings.toHexString(uint256(uint160(token))),
+            ":",
+            Strings.toString(identifier)
+        );
 
         // Decode the JSON response into a `Message` struct
         string memory rawOracleResponse = string(vm.ffi(args));
@@ -108,7 +115,7 @@ contract ForwardTest is Test {
 
     function generateForwardBid(
         uint256 makerPk,
-        IERC721 boughtToken,
+        IERC721 token,
         uint256 identifierOrCriteria,
         uint256 unitPrice,
         uint128 amount
@@ -117,8 +124,8 @@ contract ForwardTest is Test {
 
         // Prepare balance and approval
         vm.startPrank(maker);
-        weth.deposit{value: unitPrice}();
-        weth.approve(address(forward), unitPrice);
+        weth.deposit{value: unitPrice * amount}();
+        weth.approve(address(forward), unitPrice * amount);
         vm.stopPrank();
 
         // Generate bid
@@ -127,7 +134,7 @@ contract ForwardTest is Test {
                 ? Forward.ItemKind.ERC721
                 : Forward.ItemKind.ERC721_WITH_CRITERIA,
             maker: maker,
-            token: address(boughtToken),
+            token: address(token),
             identifierOrCriteria: identifierOrCriteria,
             unitPrice: unitPrice,
             amount: amount,
@@ -151,7 +158,7 @@ contract ForwardTest is Test {
 
     function generateSeaportListing(
         uint256 makerPk,
-        address tokenAddress,
+        address token,
         uint256 identifier,
         uint256 unitPrice
     ) internal returns (ISeaport.Order memory order) {
@@ -163,7 +170,7 @@ contract ForwardTest is Test {
             address[] memory royaltyRecipients,
             uint256[] memory royaltyAmounts
         ) = forward.royaltyEngine().getRoyaltyView(
-                tokenAddress,
+                token,
                 identifier,
                 unitPrice
             );
@@ -195,7 +202,7 @@ contract ForwardTest is Test {
         // Populate the listing's offer items
         parameters.offer[0] = ISeaport.OfferItem(
             ISeaport.ItemType.ERC721,
-            tokenAddress,
+            token,
             identifier,
             1,
             1
@@ -266,7 +273,7 @@ contract ForwardTest is Test {
         order.signature = abi.encode(
             Vault.SeaportListingDetails({
                 itemType: ISeaport.ItemType.ERC721,
-                token: tokenAddress,
+                token: token,
                 identifier: identifier,
                 amount: 1,
                 startTime: parameters.startTime,
@@ -275,18 +282,18 @@ contract ForwardTest is Test {
                 payments: payments,
                 signature: signature
             }),
-            fetchOracleData()
+            fetchOracleData(token, identifier)
         );
     }
 
     function getTotalRoyaltyAmount(
-        address tokenAddress,
+        address token,
         uint256 identifier,
         uint256 price
     ) internal view returns (uint256) {
         (, uint256[] memory royaltyAmounts) = forward
             .royaltyEngine()
-            .getRoyaltyView(tokenAddress, identifier, price);
+            .getRoyaltyView(token, identifier, price);
 
         uint256 totalRoyaltyAmount;
         for (uint256 i = 0; i < royaltyAmounts.length; i++) {
@@ -308,11 +315,11 @@ contract ForwardTest is Test {
         (
             Forward.Order memory order,
             bytes memory signature
-        ) = generateForwardBid(alicePk, token, tokenIdentifier, unitPrice, 1);
+        ) = generateForwardBid(alicePk, bayc, baycIdentifier1, unitPrice, 1);
 
         // Fill bid
-        vm.startPrank(tokenOwner);
-        token.setApprovalForAll(address(forward), true);
+        vm.startPrank(baycOwner);
+        bayc.setApprovalForAll(address(forward), true);
         forward.fillBid(
             Forward.FillDetails({
                 order: order,
@@ -323,16 +330,16 @@ contract ForwardTest is Test {
         vm.stopPrank();
 
         // Ensure the taker got the payment from the bid
-        require(weth.balanceOf(tokenOwner) == unitPrice);
+        require(weth.balanceOf(baycOwner) == unitPrice);
 
         // Ensure the token is now inside the maker's vault
         require(
-            token.ownerOf(tokenIdentifier) == address(forward.vaults(alice))
+            bayc.ownerOf(baycIdentifier1) == address(forward.vaults(alice))
         );
 
         // Cannot fill an order for which the fillable quantity got to zero
         vm.expectRevert(Forward.InsufficientAmountAvailable.selector);
-        vm.prank(tokenOwner);
+        vm.prank(baycOwner);
         forward.fillBid(
             Forward.FillDetails({
                 order: order,
@@ -350,7 +357,7 @@ contract ForwardTest is Test {
         bytes32[] memory identifiers = new bytes32[](4);
         identifiers[0] = keccak256(abi.encode(uint256(1)));
         identifiers[1] = keccak256(abi.encode(uint256(2)));
-        identifiers[2] = keccak256(abi.encode(uint256(tokenIdentifier)));
+        identifiers[2] = keccak256(abi.encode(uint256(baycIdentifier1)));
         identifiers[3] = keccak256(abi.encode(uint256(4)));
 
         // Generate criteria proof
@@ -363,64 +370,75 @@ contract ForwardTest is Test {
         (
             Forward.Order memory order,
             bytes memory signature
-        ) = generateForwardBid(alicePk, token, criteria, unitPrice, 1);
+        ) = generateForwardBid(alicePk, bayc, criteria, unitPrice, 1);
 
         // Fill bid
-        vm.startPrank(tokenOwner);
-        token.setApprovalForAll(address(forward), true);
+        vm.startPrank(baycOwner);
+        bayc.setApprovalForAll(address(forward), true);
         forward.fillBidWithCriteria(
             Forward.FillDetails({
                 order: order,
                 signature: signature,
                 fillAmount: 1
             }),
-            tokenIdentifier,
+            baycIdentifier1,
             criteriaProof
         );
         vm.stopPrank();
 
         // Ensure the taker got the payment from the bid
-        require(weth.balanceOf(tokenOwner) == unitPrice);
+        require(weth.balanceOf(baycOwner) == unitPrice);
 
         // Ensure the token is now inside the maker's vault
         require(
-            token.ownerOf(tokenIdentifier) == address(forward.vaults(alice))
+            bayc.ownerOf(baycIdentifier1) == address(forward.vaults(alice))
         );
     }
 
-    // function testPartialBidFilling() external {
-    //     uint256 unitPrice = 1 ether;
-    //     (
-    //         Forward.Order memory order,
-    //         bytes memory signature
-    //     ) = generateForwardBid(alicePk, token, 0, unitPrice, 1);
+    function testPartialBidFilling() external {
+        // Create vault
+        vm.prank(alice);
+        forward.createVault();
 
-    //     // Fill bid
-    //     vm.startPrank(tokenOwner);
-    //     token.setApprovalForAll(address(forward), true);
-    //     forward.fillBidWithCriteria(
-    //         Forward.FillDetails({order: order, signature: signature}),
-    //         tokenIdentifier,
-    //         new bytes32[](0)
-    //     );
-    //     vm.stopPrank();
+        // Construct single-token bid
+        uint256 unitPrice = 1 ether;
+        (
+            Forward.Order memory order,
+            bytes memory signature
+        ) = generateForwardBid(alicePk, bayc, 0, unitPrice, 2);
 
-    //     // Check the order's status
-    //     (, uint128 filledAmount) = forward.orderStatuses(
-    //         forward.getOrderHash(order)
-    //     );
-    //     require(filledAmount == 1);
+        // Fill bid
+        vm.startPrank(baycOwner);
+        bayc.setApprovalForAll(address(forward), true);
+        forward.fillBidWithCriteria(
+            Forward.FillDetails({order: order, signature: signature, fillAmount: 1}),
+            baycIdentifier1,
+            new bytes32[](0)
+        );
+        vm.stopPrank();
 
-    //     // Filling will fail if the order is already filled
-    //     vm.startPrank(tokenOwner);
-    //     vm.expectRevert(Forward.InsufficientAmountAvailable.selector);
-    //     forward.fillBidWithCriteria(
-    //         Forward.FillDetails({order: order, signature: signature}),
-    //         tokenIdentifier,
-    //         new bytes32[](0)
-    //     );
-    //     vm.stopPrank();
-    // }
+        // Check the order's status
+        (, uint128 filledAmount) = forward.orderStatuses(
+            forward.getOrderHash(order)
+        );
+        require(filledAmount == 1);
+
+        // Fill bid a second time
+                vm.startPrank(baycOwner);
+        bayc.setApprovalForAll(address(forward), true);
+        forward.fillBidWithCriteria(
+            Forward.FillDetails({order: order, signature: signature, fillAmount: 1}),
+            baycIdentifier2,
+            new bytes32[](0)
+        );
+        vm.stopPrank();
+
+        // Check the order's status
+        (, filledAmount) = forward.orderStatuses(
+            forward.getOrderHash(order)
+        );
+        require(filledAmount == 2);
+    }
 
     // function testFillSeaportListing() public {
     //     vm.prank(tokenOwner);
