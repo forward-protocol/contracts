@@ -15,6 +15,7 @@ import {IRoyaltyEngine} from "./interfaces/external/IRoyaltyEngine.sol";
 import {IConduitController} from "./interfaces/external/ISeaport.sol";
 import {IOptOutList} from "./interfaces/IOptOutList.sol";
 import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
+import {IWithdrawValidator} from "./interfaces/IWithdrawValidator.sol";
 
 contract Forward is Ownable, ReentrancyGuard {
     using Clones for address;
@@ -77,6 +78,7 @@ contract Forward is Ownable, ReentrancyGuard {
     event OptOutListUpdated(address newOptOutList);
     event PriceOracleUpdated(address newPriceOracle);
     event RoyaltyEngineUpdated(address newRoyaltyEngine);
+    event WithdrawValidatorUpdated(address newWithdrawValidator);
 
     event ListTimeLimitUpdated(uint256 newListTimeLimit);
     event MinPriceBpsUpdated(uint256 newMinPriceBps);
@@ -118,6 +120,7 @@ contract Forward is Ownable, ReentrancyGuard {
     IOptOutList public optOutList;
     IPriceOracle public priceOracle;
     IRoyaltyEngine public royaltyEngine;
+    IWithdrawValidator public withdrawValidator;
 
     // There is a time limit for listing from the vault and once that passes,
     // the only way to withdraw a token from the vault is by paying royalties
@@ -227,6 +230,11 @@ contract Forward is Ownable, ReentrancyGuard {
     function updateRoyaltyEngine(address newRoyaltyEngine) external onlyOwner {
         royaltyEngine = IRoyaltyEngine(newRoyaltyEngine);
         emit RoyaltyEngineUpdated(newRoyaltyEngine);
+    }
+
+    function updateWithdrawValidator(address newWithdrawValidator) external onlyOwner {
+        withdrawValidator = IWithdrawValidator(newWithdrawValidator);
+        emit WithdrawValidatorUpdated(newWithdrawValidator);
     }
 
     function updateListTimeLimit(uint256 newListTimeLimit) external onlyOwner {

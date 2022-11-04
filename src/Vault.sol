@@ -8,6 +8,7 @@ import {ECDSA} from "openzeppelin/utils/cryptography/ECDSA.sol";
 import {Forward} from "./Forward.sol";
 
 import {ISeaport} from "./interfaces/external/ISeaport.sol";
+import {IWithdrawValidator} from "./interfaces/IWithdrawValidator.sol";
 
 contract Vault {
     // Structs
@@ -108,36 +109,43 @@ contract Vault {
         // Cache the protocol address for gas-efficiency
         Forward protocol = forward;
 
+        // Depending on the recipient, royalties might get skipped
+        IWithdrawValidator withdrawValidator = protocol.withdrawValidator();
+        bool skipRoyalties = address(withdrawValidator) != address(0) &&
+            forward.withdrawValidator().canSkipRoyalties(msg.sender, recipient);
+
         uint256 itemsLength = items.length;
         for (uint256 i = 0; i < itemsLength; ) {
             IERC721 token = items[i].token;
             uint256 identifier = items[i].identifier;
 
-            // Fetch the token's price
-            uint256 price = protocol.priceOracle().getPrice(
-                address(token),
-                identifier,
-                protocol.oraclePriceWithdrawMaxAge(),
-                oracleData[i]
-            );
-
-            // Fetch the token's royalties (relative to the token's price)
-            (
-                address[] memory royaltyRecipients,
-                uint256[] memory royaltyAmounts
-            ) = protocol.royaltyEngine().getRoyaltyView(
+            if (!skipRoyalties) {
+                // Fetch the token's price
+                uint256 price = protocol.priceOracle().getPrice(
                     address(token),
                     identifier,
-                    price
+                    protocol.oraclePriceWithdrawMaxAge(),
+                    oracleData[i]
                 );
 
-            // Pay the royalties
-            uint256 recipientsLength = royaltyRecipients.length;
-            for (uint256 j = 0; j < recipientsLength; ) {
-                _sendPayment(royaltyRecipients[j], royaltyAmounts[j]);
+                // Fetch the token's royalties (relative to the token's price)
+                (
+                    address[] memory royaltyRecipients,
+                    uint256[] memory royaltyAmounts
+                ) = protocol.royaltyEngine().getRoyaltyView(
+                        address(token),
+                        identifier,
+                        price
+                    );
 
-                unchecked {
-                    ++j;
+                // Pay the royalties
+                uint256 recipientsLength = royaltyRecipients.length;
+                for (uint256 j = 0; j < recipientsLength; ) {
+                    _sendPayment(royaltyRecipients[j], royaltyAmounts[j]);
+
+                    unchecked {
+                        ++j;
+                    }
                 }
             }
 
@@ -163,37 +171,44 @@ contract Vault {
         // Cache the protocol address for gas-efficiency
         Forward protocol = forward;
 
+        // Depending on the recipient, royalties might get skipped
+        IWithdrawValidator withdrawValidator = protocol.withdrawValidator();
+        bool skipRoyalties = address(withdrawValidator) != address(0) &&
+            forward.withdrawValidator().canSkipRoyalties(msg.sender, recipient);
+
         uint256 itemsLength = items.length;
         for (uint256 i = 0; i < itemsLength; ) {
             IERC1155 token = items[i].token;
             uint256 identifier = items[i].identifier;
             uint256 amount = items[i].amount;
 
-            // Fetch the token's price
-            uint256 price = protocol.priceOracle().getPrice(
-                address(token),
-                identifier,
-                protocol.oraclePriceWithdrawMaxAge(),
-                oracleData[i]
-            );
-
-            // Fetch the token's royalties (relative to the token's price)
-            (
-                address[] memory royaltyRecipients,
-                uint256[] memory royaltyAmounts
-            ) = protocol.royaltyEngine().getRoyaltyView(
+            if (!skipRoyalties) {
+                // Fetch the token's price
+                uint256 price = protocol.priceOracle().getPrice(
                     address(token),
                     identifier,
-                    price * amount
+                    protocol.oraclePriceWithdrawMaxAge(),
+                    oracleData[i]
                 );
 
-            // Pay the royalties
-            uint256 recipientsLength = royaltyRecipients.length;
-            for (uint256 j = 0; j < recipientsLength; ) {
-                _sendPayment(royaltyRecipients[j], royaltyAmounts[j]);
+                // Fetch the token's royalties (relative to the token's price)
+                (
+                    address[] memory royaltyRecipients,
+                    uint256[] memory royaltyAmounts
+                ) = protocol.royaltyEngine().getRoyaltyView(
+                        address(token),
+                        identifier,
+                        price * amount
+                    );
 
-                unchecked {
-                    ++j;
+                // Pay the royalties
+                uint256 recipientsLength = royaltyRecipients.length;
+                for (uint256 j = 0; j < recipientsLength; ) {
+                    _sendPayment(royaltyRecipients[j], royaltyAmounts[j]);
+
+                    unchecked {
+                        ++j;
+                    }
                 }
             }
 
@@ -284,7 +299,10 @@ contract Vault {
 
         // Ensure the listing's validity time is not more than the oracle's price max age
         uint256 oraclePriceListMaxAge = protocol.oraclePriceListMaxAge();
-        if (listingDetails.endTime - listingDetails.startTime > oraclePriceListMaxAge) {
+        if (
+            listingDetails.endTime - listingDetails.startTime >
+            oraclePriceListMaxAge
+        ) {
             revert SeaportListingIsInvalid();
         }
 
