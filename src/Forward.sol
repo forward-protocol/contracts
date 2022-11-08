@@ -232,7 +232,10 @@ contract Forward is Ownable, ReentrancyGuard {
         emit RoyaltyEngineUpdated(newRoyaltyEngine);
     }
 
-    function updateWithdrawValidator(address newWithdrawValidator) external onlyOwner {
+    function updateWithdrawValidator(address newWithdrawValidator)
+        external
+        onlyOwner
+    {
         withdrawValidator = IWithdrawValidator(newWithdrawValidator);
         emit WithdrawValidatorUpdated(newWithdrawValidator);
     }
