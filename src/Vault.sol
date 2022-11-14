@@ -368,7 +368,8 @@ contract Vault {
             for (uint256 i = diff; i < paymentsLength; ) {
                 if (
                     payments[i].recipient != royaltyRecipients[i - diff] ||
-                    payments[i].amount != royaltyAmounts[i - diff]
+                    // The royalty should be AT LEAST what's returned by the royalty registry
+                    payments[i].amount < royaltyAmounts[i - diff]
                 ) {
                     revert SeaportListingRoyaltiesAreIncorrect();
                 }
