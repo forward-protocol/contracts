@@ -205,7 +205,7 @@ contract ForwardTest is Test {
             0,
             unitPrice - totalRoyaltyAmount,
             unitPrice - totalRoyaltyAmount,
-            maker
+            address(vault)
         );
         for (uint256 i = 0; i < royaltiesLength; i++) {
             parameters.consideration[i + 1] = ISeaport.ConsiderationItem(
