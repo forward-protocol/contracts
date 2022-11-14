@@ -20,18 +20,13 @@ import {IWETH} from "../src/interfaces/external/IWETH.sol";
 contract ForwardTest is Test {
     using stdJson for string;
 
-    OptOutList internal optOutList;
-    PriceOracle internal priceOracle;
-    IRoyaltyEngine internal royaltyEngine;
-
     Forward internal forward;
 
     // Setup WETH
     IWETH internal weth = IWETH(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
 
     // Setup token with on-chain royalties
-    IERC721 internal bayc =
-        IERC721(0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D);
+    IERC721 internal bayc = IERC721(0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D);
     address internal baycOwner = 0x8AD272Ac86c6C88683d9a60eb8ED57E6C304bB0C;
     uint256 internal baycIdentifier1 = 7090;
     uint256 internal baycIdentifier2 = 5977;
@@ -50,20 +45,14 @@ contract ForwardTest is Test {
         vm.warp(block.timestamp + 60);
 
         // Setup utility contracts
-        optOutList = new OptOutList();
-        priceOracle = new PriceOracle(
-            0x32dA57E736E05f75aa4FaE2E9Be60FD904492726
+        address optOutList = address(new OptOutList());
+        address priceOracle = address(
+            new PriceOracle(0x32dA57E736E05f75aa4FaE2E9Be60FD904492726)
         );
-        royaltyEngine = IRoyaltyEngine(
-            0x0385603ab55642cb4Dd5De3aE9e306809991804f
-        );
+        address royaltyEngine = 0x0385603ab55642cb4Dd5De3aE9e306809991804f;
 
         // Setup protocol contract
-        forward = new Forward(
-            address(optOutList),
-            address(priceOracle),
-            address(royaltyEngine)
-        );
+        forward = new Forward(optOutList, priceOracle, royaltyEngine);
 
         // Grant some ETH to all wallets
         vm.deal(alice, 100 ether);
@@ -75,14 +64,15 @@ contract ForwardTest is Test {
 
     // Helper methods
 
-    function fetchOracleData(address token, uint256 identifier) internal returns (bytes memory) {
+    function fetchOracleData(address token, uint256 identifier)
+        internal
+        returns (bytes memory)
+    {
         // Fetch oracle message for the token's price
         string[] memory args = new string[](3);
         args[0] = "bash";
         args[1] = "-c";
-        args[
-            2
-        ] = string.concat(
+        args[2] = string.concat(
             "curl -s https://api.reservoir.tools/oracle/collections/floor-ask/v4?token=",
             Strings.toHexString(uint256(uint160(token))),
             ":",
@@ -411,7 +401,11 @@ contract ForwardTest is Test {
         vm.startPrank(baycOwner);
         bayc.setApprovalForAll(address(forward), true);
         forward.fillBidWithCriteria(
-            Forward.FillDetails({order: order, signature: signature, fillAmount: 1}),
+            Forward.FillDetails({
+                order: order,
+                signature: signature,
+                fillAmount: 1
+            }),
             baycIdentifier1,
             new bytes32[](0)
         );
@@ -424,19 +418,21 @@ contract ForwardTest is Test {
         require(filledAmount == 1);
 
         // Fill bid a second time
-                vm.startPrank(baycOwner);
+        vm.startPrank(baycOwner);
         bayc.setApprovalForAll(address(forward), true);
         forward.fillBidWithCriteria(
-            Forward.FillDetails({order: order, signature: signature, fillAmount: 1}),
+            Forward.FillDetails({
+                order: order,
+                signature: signature,
+                fillAmount: 1
+            }),
             baycIdentifier2,
             new bytes32[](0)
         );
         vm.stopPrank();
 
         // Check the order's status
-        (, filledAmount) = forward.orderStatuses(
-            forward.getOrderHash(order)
-        );
+        (, filledAmount) = forward.orderStatuses(forward.getOrderHash(order));
         require(filledAmount == 2);
     }
 
@@ -496,13 +492,7 @@ contract ForwardTest is Test {
         (
             Forward.Order memory forwardOrder,
             bytes memory signature
-        ) = generateForwardBid(
-                alicePk,
-                bayc,
-                baycIdentifier1,
-                bidUnitPrice,
-                1
-            );
+        ) = generateForwardBid(alicePk, bayc, baycIdentifier1, bidUnitPrice, 1);
 
         // Increment counter
         vm.prank(alice);
@@ -513,7 +503,11 @@ contract ForwardTest is Test {
         bayc.setApprovalForAll(address(forward), true);
         vm.expectRevert(Forward.InvalidSignature.selector);
         forward.fillBid(
-            Forward.FillDetails({order: forwardOrder, signature: signature, fillAmount: 1})
+            Forward.FillDetails({
+                order: forwardOrder,
+                signature: signature,
+                fillAmount: 1
+            })
         );
         vm.stopPrank();
     }
@@ -528,13 +522,7 @@ contract ForwardTest is Test {
         (
             Forward.Order memory forwardOrder,
             bytes memory signature
-        ) = generateForwardBid(
-                alicePk,
-                bayc,
-                baycIdentifier1,
-                bidUnitPrice,
-                1
-            );
+        ) = generateForwardBid(alicePk, bayc, baycIdentifier1, bidUnitPrice, 1);
 
         // Prepare orders to cancel
         Forward.Order[] memory ordersToCancel = new Forward.Order[](1);
@@ -549,7 +537,11 @@ contract ForwardTest is Test {
         bayc.setApprovalForAll(address(forward), true);
         vm.expectRevert(Forward.OrderIsCancelled.selector);
         forward.fillBid(
-            Forward.FillDetails({order: forwardOrder, signature: signature, fillAmount: 1})
+            Forward.FillDetails({
+                order: forwardOrder,
+                signature: signature,
+                fillAmount: 1
+            })
         );
         vm.stopPrank();
     }
@@ -576,7 +568,7 @@ contract ForwardTest is Test {
         vm.stopPrank();
 
         // Extract the price from the oracle message
-        uint256 price = priceOracle.getPrice(
+        uint256 price = forward.priceOracle().getPrice(
             address(bayc),
             baycIdentifier1,
             1 minutes,
@@ -603,6 +595,8 @@ contract ForwardTest is Test {
         // Create vault
         vm.prank(baycOwner);
         Vault vault = forward.createVault();
+
+        OptOutList optOutList = OptOutList(address(forward.optOutList()));
 
         // Mark collection as opted-out
         vm.prank(optOutList.owner());
