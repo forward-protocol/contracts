@@ -46,6 +46,7 @@ contract Forward is Ownable, ReentrancyGuard {
 
     struct OrderStatus {
         bool cancelled;
+        bool validated;
         uint128 filledAmount;
     }
 
@@ -410,14 +411,19 @@ contract Forward is Ownable, ReentrancyGuard {
             revert OrderIsExpired();
         }
 
-        // Ensure the maker's signature is valid
+        // Compute the order's hash and its EIP712 hash
         bytes32 orderHash = getOrderHash(order);
         bytes32 eip712Hash = _getEIP712Hash(orderHash);
-        if (ECDSA.recover(eip712Hash, details.signature) != maker) {
+
+        // Ensure the maker's signature is valid
+        OrderStatus memory orderStatus = orderStatuses[orderHash];
+        if (
+            !orderStatus.validated &&
+            ECDSA.recover(eip712Hash, details.signature) != maker
+        ) {
             revert InvalidSignature();
         }
 
-        OrderStatus memory orderStatus = orderStatuses[orderHash];
         // Ensure the order is not cancelled
         if (orderStatus.cancelled) {
             revert OrderIsCancelled();
@@ -456,8 +462,10 @@ contract Forward is Ownable, ReentrancyGuard {
             );
         }
 
-        // Update the order's filled amount
-        orderStatuses[orderHash].filledAmount += fillAmount;
+        // Update the order's validated status and filled amount
+        orderStatus.validated = true;
+        orderStatus.filledAmount += fillAmount;
+        orderStatuses[orderHash] = orderStatus;
 
         emit OrderFilled(
             orderHash,

@@ -434,9 +434,10 @@ contract ForwardTest is Test {
         vm.stopPrank();
 
         // Check the order's status
-        (, uint128 filledAmount) = forward.orderStatuses(
+        (, bool validated, uint128 filledAmount) = forward.orderStatuses(
             forward.getOrderHash(order)
         );
+        require(validated);
         require(filledAmount == 1);
 
         // Fill bid a second time
@@ -454,7 +455,7 @@ contract ForwardTest is Test {
         vm.stopPrank();
 
         // Check the order's status
-        (, filledAmount) = forward.orderStatuses(forward.getOrderHash(order));
+        (, , filledAmount) = forward.orderStatuses(forward.getOrderHash(order));
         require(filledAmount == 2);
     }
 

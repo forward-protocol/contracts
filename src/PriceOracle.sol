@@ -30,9 +30,8 @@ contract PriceOracle is ReservoirOracle {
         // Construct the wanted message id
         bytes32 id = keccak256(
             abi.encode(
-                keccak256(
-                    "CollectionPriceByToken(uint8 kind,uint256 twapSeconds,address token,uint256 tokenId)"
-                ),
+                // keccak256("CollectionPriceByToken(uint8 kind,uint256 twapSeconds,address token,uint256 tokenId)")
+                0x4163bce510ba405523529cf23054a8ff50e064fa158d7a8a76df334bfcfad6ef,
                 uint8(0), // PriceKind.SPOT
                 uint256(0),
                 token,
