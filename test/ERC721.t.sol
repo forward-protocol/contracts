@@ -150,7 +150,10 @@ contract ForwardTest is Test {
         uint256 makerPk,
         address token,
         uint256 identifier,
-        uint256 unitPrice
+        uint256 unitPrice,
+        // Additional payments on top of the royalties should be supported
+        // without any issues by the vault EIP1271 signature verification
+        Vault.Payment[] memory additionalPayments
     ) internal returns (ISeaport.Order memory order) {
         address maker = vm.addr(makerPk);
         Vault vault = forward.vaults(maker);
@@ -165,10 +168,17 @@ contract ForwardTest is Test {
                 unitPrice
             );
 
+        uint256 additionalPaymentsLength = additionalPayments.length;
         uint256 royaltiesLength = royaltyRecipients.length;
+        uint256 considerationCount = 1 +
+            additionalPaymentsLength +
+            royaltiesLength;
 
-        // Compute the total royalty bps
+        // Compute the total royalty amount (including additional payments)
         uint256 totalRoyaltyAmount;
+        for (uint256 i = 0; i < additionalPaymentsLength; i++) {
+            totalRoyaltyAmount += additionalPayments[i].amount;
+        }
         for (uint256 i = 0; i < royaltiesLength; i++) {
             totalRoyaltyAmount += royaltyAmounts[i];
         }
@@ -179,7 +189,7 @@ contract ForwardTest is Test {
         // parameters.zone = address(0);
         parameters.offer = new ISeaport.OfferItem[](1);
         parameters.consideration = new ISeaport.ConsiderationItem[](
-            1 + royaltiesLength
+            considerationCount
         );
         parameters.orderType = ISeaport.OrderType.PARTIAL_OPEN;
         parameters.startTime = block.timestamp;
@@ -187,7 +197,7 @@ contract ForwardTest is Test {
         // parameters.zoneHash = bytes32(0);
         // parameters.salt = 0;
         parameters.conduitKey = forward.seaportConduitKey();
-        parameters.totalOriginalConsiderationItems = 1 + royaltiesLength;
+        parameters.totalOriginalConsiderationItems = considerationCount;
 
         // Populate the listing's offer items
         parameters.offer[0] = ISeaport.OfferItem(
@@ -207,8 +217,20 @@ contract ForwardTest is Test {
             unitPrice - totalRoyaltyAmount,
             address(vault)
         );
-        for (uint256 i = 0; i < royaltiesLength; i++) {
+        for (uint256 i = 0; i < additionalPaymentsLength; i++) {
             parameters.consideration[i + 1] = ISeaport.ConsiderationItem(
+                ISeaport.ItemType.NATIVE,
+                address(0),
+                0,
+                additionalPayments[i].amount,
+                additionalPayments[i].amount,
+                additionalPayments[i].recipient
+            );
+        }
+        for (uint256 i = 0; i < royaltiesLength; i++) {
+            parameters.consideration[
+                i + 1 + additionalPaymentsLength
+            ] = ISeaport.ConsiderationItem(
                 ISeaport.ItemType.NATIVE,
                 address(0),
                 0,
@@ -445,13 +467,25 @@ contract ForwardTest is Test {
         vm.prank(baycOwner);
         bayc.safeTransferFrom(baycOwner, address(vault), baycIdentifier1);
 
+        // Include some additional payments
+        Vault.Payment[] memory additionalPayments = new Vault.Payment[](2);
+        additionalPayments[0] = Vault.Payment({
+            amount: 0.01 ether,
+            recipient: dan
+        });
+        additionalPayments[1] = Vault.Payment({
+            amount: 0.0045 ether,
+            recipient: emily
+        });
+
         // Construct Seaport listing
         uint256 listingPrice = 70 ether;
         ISeaport.Order memory seaportOrder = generateSeaportListing(
             alicePk,
             address(bayc),
             baycIdentifier1,
-            listingPrice
+            listingPrice,
+            additionalPayments
         );
 
         // Save the maker's balance before filling
@@ -475,10 +509,15 @@ contract ForwardTest is Test {
             listingPrice
         );
 
+        uint256 totalAdditionalAmount;
+        for (uint256 i = 0; i < additionalPayments.length; i++) {
+            totalAdditionalAmount += additionalPayments[i].amount;
+        }
+
         // Ensure the maker got the payment from the listing
         require(
             aliceETHBalanceAfter - aliceETHBalanceBefore ==
-                listingPrice - totalRoyaltyAmount
+                listingPrice - totalRoyaltyAmount - totalAdditionalAmount
         );
     }
 
