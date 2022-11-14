@@ -17,9 +17,12 @@ contract OptOutList is Ownable {
 
     event OptOutListUpdated(address token, bool optedOut);
 
-    // Fields
+    // Private fields
 
-    mapping(address => bool) public optedOut;
+    // Use `uint256` instead of `bool` for gas-efficiency
+    // Reference:
+    // https://github.com/OpenZeppelin/openzeppelin-contracts/blob/58f635312aa21f947cae5f8578638a85aa2519f5/contracts/security/ReentrancyGuard.sol#L23-L27
+    mapping(address => uint256) private optOutStatus;
 
     // Public methods
 
@@ -29,6 +32,10 @@ contract OptOutList is Ownable {
         }
 
         _setOptOutStatus(token, status);
+    }
+
+    function optedOut(address token) external view returns (bool status) {
+        return optOutStatus[token] == 1 ? true : false;
     }
 
     // Restricted methods
@@ -44,11 +51,13 @@ contract OptOutList is Ownable {
     // Internal methods
 
     function _setOptOutStatus(address token, bool status) internal {
-        if (optedOut[token] == status) {
+        uint256 currentStatus = optOutStatus[token] == 1 ? 1 : 2;
+        uint256 newStatus = status ? 1 : 2;
+        if (currentStatus == newStatus) {
             revert AlreadySet();
         }
 
-        optedOut[token] = status;
+        optOutStatus[token] = newStatus;
         emit OptOutListUpdated(token, status);
     }
 }
