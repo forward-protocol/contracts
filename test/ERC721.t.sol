@@ -12,6 +12,7 @@ import {OptOutList} from "../src/OptOutList.sol";
 import {Forward} from "../src/Forward.sol";
 import {PriceOracle} from "../src/PriceOracle.sol";
 import {Vault} from "../src/Vault.sol";
+import {MigrationWithdrawValidator} from "./utils/MigrationWithdrawValidator.sol";
 
 import {IRoyaltyEngine} from "../src/interfaces/external/IRoyaltyEngine.sol";
 import {ISeaport} from "../src/interfaces/external/ISeaport.sol";
@@ -552,7 +553,7 @@ contract ForwardTest is Test {
         vm.stopPrank();
     }
 
-    function testCancel() external {
+    function testCancel() public {
         // Create vault
         vm.prank(alice);
         forward.createVault();
@@ -586,7 +587,7 @@ contract ForwardTest is Test {
         vm.stopPrank();
     }
 
-    function testDeposit() external {
+    function testDepositAndWithdraw() public {
         // Create vault
         vm.prank(alice);
         Vault vault = forward.createVault();
@@ -631,7 +632,7 @@ contract ForwardTest is Test {
         require(bayc.ownerOf(baycIdentifier1) == alice);
     }
 
-    function testOptOutList() external {
+    function testOptOutList() public {
         // Create vault
         vm.prank(baycOwner);
         Vault vault = forward.createVault();
@@ -647,5 +648,53 @@ contract ForwardTest is Test {
         vm.expectRevert(Vault.CollectionOptedOut.selector);
         bayc.safeTransferFrom(baycOwner, address(vault), baycIdentifier1);
         vm.stopPrank();
+    }
+
+    function testWithdrawWithSkippedRoyalties() public {
+        // Create vault
+        vm.prank(alice);
+        Vault vault = forward.createVault();
+
+        // Deposit token to vault
+        vm.prank(baycOwner);
+        bayc.safeTransferFrom(baycOwner, address(vault), baycIdentifier1);
+
+        // Create a new protocol instance
+        Forward newForward = new Forward(
+            address(forward.optOutList()),
+            address(forward.priceOracle()),
+            address(forward.royaltyEngine())
+        );
+
+        // Deploy and activate a withdraw validator to the new protocol instance
+        address withdrawValidator = address(
+            new MigrationWithdrawValidator(address(newForward))
+        );
+        vm.startPrank(forward.owner());
+        forward.updateWithdrawValidator(withdrawValidator);
+        vm.stopPrank();
+
+        // Prepare withdraw data
+        Vault.ERC721Item[] memory items = new Vault.ERC721Item[](1);
+        items[0] = Vault.ERC721Item(bayc, baycIdentifier1);
+        bytes[] memory data = new bytes[](1);
+
+        // Create vault on the new protocol instance
+        vm.prank(alice);
+        Vault newVault = newForward.createVault();
+
+        // Cannot withdraw royalty-less to anything other than the new vault
+        vm.startPrank(alice);
+        vm.expectRevert();
+        vault.withdrawERC721s(items, data, alice);
+        vm.stopPrank();
+
+        // Withdraw to the new vault
+        vm.startPrank(alice);
+        vault.withdrawERC721s(items, data, address(newVault));
+        vm.stopPrank();
+
+        // Ensure the withdrawn item is in the new vault
+        require(bayc.ownerOf(baycIdentifier1) == address(newVault));
     }
 }
