@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
+import {ReentrancyGuard} from "openzeppelin/security/ReentrancyGuard.sol";
 import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
 import {IERC721} from "openzeppelin/token/ERC721/IERC721.sol";
 import {IERC1155} from "openzeppelin/token/ERC1155/IERC1155.sol";
@@ -11,7 +12,7 @@ import {Forward} from "./Forward.sol";
 import {ISeaport} from "./interfaces/external/ISeaport.sol";
 import {IWithdrawValidator} from "./interfaces/IWithdrawValidator.sol";
 
-contract Vault {
+contract Vault is ReentrancyGuard {
     // Structs
 
     struct ERC721Item {
@@ -114,7 +115,7 @@ contract Vault {
         ERC721Item[] calldata items,
         bytes[] calldata oracleData,
         address recipient
-    ) external payable {
+    ) external payable nonReentrant {
         // Only the owner can withdraw tokens
         if (msg.sender != owner) {
             revert Unauthorized();
@@ -187,7 +188,7 @@ contract Vault {
         ERC1155Item[] calldata items,
         bytes[] calldata oracleData,
         address recipient
-    ) external payable {
+    ) external payable nonReentrant {
         // Only the owner can withdraw tokens
         if (msg.sender != owner) {
             revert Unauthorized();
@@ -267,7 +268,7 @@ contract Vault {
         ISeaport.AdvancedOrder calldata order,
         ISeaport.CriteriaResolver[] calldata criteriaResolvers,
         bytes calldata oracleData
-    ) external {
+    ) external nonReentrant {
         // Only the owner can accept bids
         if (msg.sender != owner) {
             revert Unauthorized();
