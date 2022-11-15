@@ -23,8 +23,9 @@ contract ForwardTest is Test {
 
     Forward internal forward;
 
-    // Setup WETH
     IWETH internal weth = IWETH(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+    ISeaport internal seaport =
+        ISeaport(0x00000000006c3852cbEf3e08E8dF289169EdE581);
 
     // Setup token with on-chain royalties
     IERC721 internal bayc = IERC721(0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D);
@@ -35,7 +36,8 @@ contract ForwardTest is Test {
     // Setup wallets
     uint256 internal alicePk = uint256(0x01);
     address internal alice = vm.addr(alicePk);
-    address internal bob = address(0x02);
+    uint256 internal bobPk = uint256(0x02);
+    address internal bob = vm.addr(bobPk);
     address internal carol = address(0x03);
     address internal dan = address(0x04);
     address internal emily = address(0x05);
@@ -153,7 +155,6 @@ contract ForwardTest is Test {
         uint256 identifier,
         uint256 unitPrice,
         // Additional payments on top of the royalties should be supported
-        // without any issues by the vault EIP1271 signature verification
         Vault.Payment[] memory additionalPayments
     ) internal returns (ISeaport.Order memory order) {
         address maker = vm.addr(makerPk);
@@ -256,13 +257,14 @@ contract ForwardTest is Test {
         );
 
         // Sign the listing
+        (, bytes32 domainSeparator, ) = seaport.information();
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(
             makerPk,
             keccak256(
                 abi.encodePacked(
                     hex"1901",
-                    vault.SEAPORT_DOMAIN_SEPARATOR(),
-                    vault.SEAPORT().getOrderHash(components)
+                    domainSeparator,
+                    seaport.getOrderHash(components)
                 )
             )
         );
@@ -297,6 +299,130 @@ contract ForwardTest is Test {
             }),
             fetchOracleData(token, identifier)
         );
+    }
+
+    function generateSeaportBid(
+        uint256 makerPk,
+        address token,
+        uint256 identifier,
+        uint256 unitPrice,
+        // Additional payments on top of the royalties should be supported
+        Vault.Payment[] memory additionalPayments
+    ) internal returns (ISeaport.AdvancedOrder memory order) {
+        address maker = vm.addr(makerPk);
+
+        // Wrap ETH and approve for spending
+        vm.startPrank(maker);
+        weth.deposit{value: unitPrice}();
+        weth.approve(forward.seaportConduit(), unitPrice);
+        vm.stopPrank();
+
+        // Fetch the item's royalties
+        (
+            address[] memory royaltyRecipients,
+            uint256[] memory royaltyAmounts
+        ) = forward.royaltyEngine().getRoyaltyView(
+                token,
+                identifier,
+                unitPrice
+            );
+
+        uint256 additionalPaymentsLength = additionalPayments.length;
+        uint256 royaltiesLength = royaltyRecipients.length;
+        uint256 considerationCount = 1 +
+            additionalPaymentsLength +
+            royaltiesLength;
+
+        // Create Seaport listing
+        ISeaport.OrderParameters memory parameters;
+        parameters.offerer = maker;
+        // parameters.zone = address(0);
+        parameters.offer = new ISeaport.OfferItem[](1);
+        parameters.consideration = new ISeaport.ConsiderationItem[](
+            considerationCount
+        );
+        parameters.orderType = ISeaport.OrderType.PARTIAL_OPEN;
+        parameters.startTime = block.timestamp;
+        parameters.endTime = block.timestamp + 1;
+        // parameters.zoneHash = bytes32(0);
+        // parameters.salt = 0;
+        parameters.conduitKey = forward.seaportConduitKey();
+        parameters.totalOriginalConsiderationItems = considerationCount;
+
+        // Populate the offer's offer items
+        parameters.offer[0] = ISeaport.OfferItem(
+            ISeaport.ItemType.ERC20,
+            address(weth),
+            0,
+            unitPrice,
+            unitPrice
+        );
+
+        // Populate the offers's consideration items
+        parameters.consideration[0] = ISeaport.ConsiderationItem(
+            ISeaport.ItemType.ERC721,
+            token,
+            identifier,
+            1,
+            1,
+            maker
+        );
+        for (uint256 i = 0; i < additionalPaymentsLength; i++) {
+            parameters.consideration[i + 1] = ISeaport.ConsiderationItem(
+                ISeaport.ItemType.ERC20,
+                address(weth),
+                0,
+                additionalPayments[i].amount,
+                additionalPayments[i].amount,
+                additionalPayments[i].recipient
+            );
+        }
+        for (uint256 i = 0; i < royaltiesLength; i++) {
+            parameters.consideration[
+                i + 1 + additionalPaymentsLength
+            ] = ISeaport.ConsiderationItem(
+                ISeaport.ItemType.ERC20,
+                address(weth),
+                0,
+                royaltyAmounts[i],
+                royaltyAmounts[i],
+                royaltyRecipients[i]
+            );
+        }
+
+        ISeaport.OrderComponents memory components = ISeaport.OrderComponents(
+            parameters.offerer,
+            parameters.zone,
+            parameters.offer,
+            parameters.consideration,
+            parameters.orderType,
+            parameters.startTime,
+            parameters.endTime,
+            parameters.zoneHash,
+            parameters.salt,
+            parameters.conduitKey,
+            0
+        );
+
+        // Sign the listing
+        (, bytes32 domainSeparator, ) = seaport.information();
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(
+            makerPk,
+            keccak256(
+                abi.encodePacked(
+                    hex"1901",
+                    domainSeparator,
+                    seaport.getOrderHash(components)
+                )
+            )
+        );
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        order.parameters = parameters;
+        order.numerator = 1;
+        order.denominator = 1;
+        order.signature = signature;
+        // order.extraData = new bytes(0);
     }
 
     function getTotalRoyaltyAmount(
@@ -469,7 +595,7 @@ contract ForwardTest is Test {
         vm.prank(baycOwner);
         bayc.safeTransferFrom(baycOwner, address(vault), baycIdentifier1);
 
-        // Include some additional payments
+        // Include some additional payments which shouldn't affect royalty validation
         Vault.Payment[] memory additionalPayments = new Vault.Payment[](2);
         additionalPayments[0] = Vault.Payment({
             amount: 0.01 ether,
@@ -494,12 +620,8 @@ contract ForwardTest is Test {
         uint256 aliceETHBalanceBefore = alice.balance;
 
         // Fill listing
-        vm.startPrank(carol);
-        vault.SEAPORT().fulfillOrder{value: listingPrice}(
-            seaportOrder,
-            bytes32(0)
-        );
-        vm.stopPrank();
+        vm.prank(carol);
+        seaport.fulfillOrder{value: listingPrice}(seaportOrder, bytes32(0));
 
         // Save the maker's balance after filling
         uint256 aliceETHBalanceAfter = alice.balance;
@@ -696,5 +818,68 @@ contract ForwardTest is Test {
 
         // Ensure the withdrawn item is in the new vault
         require(bayc.ownerOf(baycIdentifier1) == address(newVault));
+    }
+
+    function testAcceptSeaportBid() public {
+        // Create vault
+        vm.prank(alice);
+        Vault vault = forward.createVault();
+
+        // Deposit token to vault
+        vm.prank(baycOwner);
+        bayc.safeTransferFrom(baycOwner, address(vault), baycIdentifier1);
+
+        // Include some additional payments which shouldn't affect royalty validation
+        Vault.Payment[] memory additionalPayments = new Vault.Payment[](2);
+        additionalPayments[0] = Vault.Payment({
+            amount: 0.01 ether,
+            recipient: dan
+        });
+        additionalPayments[1] = Vault.Payment({
+            amount: 0.0045 ether,
+            recipient: emily
+        });
+
+        // Construct Seaport bid
+        uint256 bidPrice = 70 ether;
+        ISeaport.AdvancedOrder memory seaportOrder = generateSeaportBid(
+            bobPk,
+            address(bayc),
+            baycIdentifier1,
+            bidPrice,
+            additionalPayments
+        );
+
+        // Save the taker's balance before filling
+        uint256 aliceWETHBalanceBefore = weth.balanceOf(alice);
+
+        // Fill bid
+        vm.prank(alice);
+        vault.acceptSeaportBid(
+            seaportOrder,
+            new ISeaport.CriteriaResolver[](0),
+            fetchOracleData(address(bayc), baycIdentifier1)
+        );
+
+        // Save the taker's balance after filling
+        uint256 aliceWETHBalanceAfter = weth.balanceOf(alice);
+
+        // Fetch the royalties to be paid relative to the listing's price
+        uint256 totalRoyaltyAmount = getTotalRoyaltyAmount(
+            address(bayc),
+            baycIdentifier1,
+            bidPrice
+        );
+
+        uint256 totalAdditionalAmount;
+        for (uint256 i = 0; i < additionalPayments.length; i++) {
+            totalAdditionalAmount += additionalPayments[i].amount;
+        }
+
+        // Ensure the maker got the payment from the listing
+        require(
+            aliceWETHBalanceAfter - aliceWETHBalanceBefore ==
+                bidPrice - totalRoyaltyAmount - totalAdditionalAmount
+        );
     }
 }

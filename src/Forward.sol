@@ -81,12 +81,10 @@ contract Forward is Ownable, ReentrancyGuard {
     event RoyaltyEngineUpdated(address newRoyaltyEngine);
     event WithdrawValidatorUpdated(address newWithdrawValidator);
 
-    event ListTimeLimitUpdated(uint256 newListTimeLimit);
+    event SoftWithdrawTimeLimitUpdated(uint256 newSoftWithdrawTimeLimit);
     event MinPriceBpsUpdated(uint256 newMinPriceBps);
-    event OraclePriceMaxAgeUpdated(
-        uint256 newListMaxAge,
-        uint256 newWithdrawMaxAge
-    );
+    event SoftWithdrawMaxAgeUpdated(uint256 newSoftWithdrawMaxAge);
+    event ForceWithdrawMaxAgeUpdated(uint256 newForceWithdrawMaxAge);
     event SeaportConduitUpdated(bytes32 newSeaportConduitKey);
 
     event VaultCreated(address owner, address vault);
@@ -123,28 +121,29 @@ contract Forward is Ownable, ReentrancyGuard {
     IRoyaltyEngine public royaltyEngine;
     IWithdrawValidator public withdrawValidator;
 
-    // There is a time limit for listing from the vault and once that passes,
-    // the only way to withdraw a token from the vault is by paying royalties
-    uint256 public listTimeLimit;
+    // There is a time limit for listing or accepting a bid directly from the
+    // vault and once that passes the only way to withdraw a token is via the
+    // force withdraw which requires royalties to get paid
+    uint256 public softWithdrawTimeLimit;
 
     // To avoid the possbility of evading royalties (by withdrawing via
-    // private listing to a different own wallet for a zero or very low
-    // price) we enforce the price of every outgoing Seaport listing to
+    // a private listing or bid to a different own wallet for a zero or
+    // very low price), we enforce the price of every outgoing order to
     // be within a percentage from the actual token's price (determined
     // via a pricing oracle)
     uint256 public minPriceBps;
 
-    // Depending on the action taken (withdrawing a token or listing externally
-    // via Seaport) there are different requirements regarding the staleness of
-    // the oracle's price
-    uint256 public oraclePriceListMaxAge;
-    uint256 public oraclePriceWithdrawMaxAge;
+    // Depending on the action that is taken (force withdrawing or listing / accepting
+    // a bid directly within the vault) there are different requirements regarding the
+    // staleness of the oracle's price
+    uint256 public softWithdrawMaxAge;
+    uint256 public forceWithdrawMaxAge;
 
     // Conduit used for Seaport listings from the vaults
     bytes32 public seaportConduitKey;
     address public seaportConduit;
 
-    // Mapping from order hash to order status (eg. cancelled and/or amount filled)
+    // Mapping from order hash to order status
     mapping(bytes32 => OrderStatus) public orderStatuses;
     // Mapping from wallet to current counter
     mapping(address => uint256) public counters;
@@ -162,11 +161,11 @@ contract Forward is Ownable, ReentrancyGuard {
         priceOracle = IPriceOracle(_priceOracle);
         royaltyEngine = IRoyaltyEngine(_royaltyEngine);
 
-        listTimeLimit = 30 days;
+        softWithdrawTimeLimit = 30 days;
         minPriceBps = 8000;
 
-        oraclePriceWithdrawMaxAge = 30 minutes;
-        oraclePriceListMaxAge = 1 days;
+        softWithdrawMaxAge = 1 days;
+        forceWithdrawMaxAge = 30 minutes;
 
         // Use OpenSea's default conduit (so that Seaport listings are available on OpenSea)
         seaportConduitKey = 0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000;
@@ -241,9 +240,12 @@ contract Forward is Ownable, ReentrancyGuard {
         emit WithdrawValidatorUpdated(newWithdrawValidator);
     }
 
-    function updateListTimeLimit(uint256 newListTimeLimit) external onlyOwner {
-        listTimeLimit = newListTimeLimit;
-        emit ListTimeLimitUpdated(newListTimeLimit);
+    function updateSoftWithdrawTimeLimit(uint256 newSoftWithdrawTimeLimit)
+        external
+        onlyOwner
+    {
+        softWithdrawTimeLimit = newSoftWithdrawTimeLimit;
+        emit SoftWithdrawTimeLimitUpdated(newSoftWithdrawTimeLimit);
     }
 
     function updateMinPriceBps(uint256 newMinPriceBps) external onlyOwner {
@@ -251,13 +253,20 @@ contract Forward is Ownable, ReentrancyGuard {
         emit MinPriceBpsUpdated(newMinPriceBps);
     }
 
-    function updateOraclePriceMaxAge(
-        uint256 newListMaxAge,
-        uint256 newWithdrawMaxAge
-    ) external onlyOwner {
-        oraclePriceListMaxAge = newListMaxAge;
-        oraclePriceWithdrawMaxAge = newWithdrawMaxAge;
-        emit OraclePriceMaxAgeUpdated(newListMaxAge, newWithdrawMaxAge);
+    function updateSoftWithdrawMaxAge(uint256 newSoftWithdrawMaxAge)
+        external
+        onlyOwner
+    {
+        softWithdrawMaxAge = newSoftWithdrawMaxAge;
+        emit SoftWithdrawMaxAgeUpdated(newSoftWithdrawMaxAge);
+    }
+
+    function updateForceWithdrawMaxAge(uint256 newForceWithdrawMaxAge)
+        external
+        onlyOwner
+    {
+        forceWithdrawMaxAge = newForceWithdrawMaxAge;
+        emit ForceWithdrawMaxAgeUpdated(newForceWithdrawMaxAge);
     }
 
     function updateSeaportConduit(bytes32 newSeaportConduitKey)

@@ -18,6 +18,11 @@ interface ISeaport {
         PARTIAL_RESTRICTED
     }
 
+    enum Side {
+        OFFER,
+        CONSIDERATION
+    }
+
     struct OfferItem {
         ItemType itemType;
         address token;
@@ -68,6 +73,22 @@ interface ISeaport {
         bytes signature;
     }
 
+    struct AdvancedOrder {
+        OrderParameters parameters;
+        uint120 numerator;
+        uint120 denominator;
+        bytes signature;
+        bytes extraData;
+    }
+
+    struct CriteriaResolver {
+        uint256 orderIndex;
+        Side side;
+        uint256 index;
+        uint256 identifier;
+        bytes32[] criteriaProof;
+    }
+
     function information()
         external
         view
@@ -91,6 +112,13 @@ interface ISeaport {
         external
         payable
         returns (bool fulfilled);
+
+    function fulfillAdvancedOrder(
+        AdvancedOrder calldata advancedOrder,
+        CriteriaResolver[] calldata criteriaResolvers,
+        bytes32 fulfillerConduitKey,
+        address recipient
+    ) external payable returns (bool fulfilled);
 
     function cancel(ISeaport.OrderComponents[] calldata orders)
         external

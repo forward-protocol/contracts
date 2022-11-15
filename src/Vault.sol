@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
+import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
 import {IERC721} from "openzeppelin/token/ERC721/IERC721.sol";
 import {IERC1155} from "openzeppelin/token/ERC1155/IERC1155.sol";
 import {ECDSA} from "openzeppelin/utils/cryptography/ECDSA.sol";
@@ -49,9 +50,9 @@ contract Vault {
 
     error AlreadyInitialized();
 
-    error SeaportListingIsInvalid();
-    error SeaportListingIsUnderpriced();
-    error SeaportListingRoyaltiesAreIncorrect();
+    error SeaportOrderIsInvalid();
+    error SeaportOrderIsUnderpriced();
+    error SeaportOrderRoyaltiesAreIncorrect();
 
     error CollectionOptedOut();
     error TokenDepositIsTooOld();
@@ -71,6 +72,9 @@ contract Vault {
     );
 
     // Public constants
+
+    IERC20 public constant WETH =
+        IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
 
     ISeaport public constant SEAPORT =
         ISeaport(0x00000000006c3852cbEf3e08E8dF289169EdE581);
@@ -110,7 +114,7 @@ contract Vault {
         ERC721Item[] calldata items,
         bytes[] calldata oracleData,
         address recipient
-    ) public payable {
+    ) external payable {
         // Only the owner can withdraw tokens
         if (msg.sender != owner) {
             revert Unauthorized();
@@ -134,7 +138,7 @@ contract Vault {
                 uint256 price = protocol.priceOracle().getPrice(
                     address(token),
                     identifier,
-                    protocol.oraclePriceWithdrawMaxAge(),
+                    protocol.forceWithdrawMaxAge(),
                     oracleData[i]
                 );
 
@@ -183,7 +187,7 @@ contract Vault {
         ERC1155Item[] calldata items,
         bytes[] calldata oracleData,
         address recipient
-    ) public payable {
+    ) external payable {
         // Only the owner can withdraw tokens
         if (msg.sender != owner) {
             revert Unauthorized();
@@ -208,7 +212,7 @@ contract Vault {
                 uint256 price = protocol.priceOracle().getPrice(
                     address(token),
                     identifier,
-                    protocol.oraclePriceWithdrawMaxAge(),
+                    protocol.forceWithdrawMaxAge(),
                     oracleData[i]
                 );
 
@@ -257,6 +261,147 @@ contract Vault {
                 ++i;
             }
         }
+    }
+
+    function acceptSeaportBid(
+        ISeaport.AdvancedOrder calldata order,
+        ISeaport.CriteriaResolver[] calldata criteriaResolvers,
+        bytes calldata oracleData
+    ) external {
+        // Only the owner can accept bids
+        if (msg.sender != owner) {
+            revert Unauthorized();
+        }
+
+        if (criteriaResolvers.length > 1) {
+            revert SeaportOrderIsInvalid();
+        }
+
+        // Validate the offer item
+        ISeaport.OfferItem memory paymentItem = order.parameters.offer[0];
+        if (
+            order.parameters.offer.length != 1 ||
+            paymentItem.itemType != ISeaport.ItemType.ERC20 ||
+            paymentItem.token != address(WETH) ||
+            paymentItem.startAmount != paymentItem.endAmount
+        ) {
+            revert SeaportOrderIsInvalid();
+        }
+
+        ISeaport.ConsiderationItem[] memory consideration = order
+            .parameters
+            .consideration;
+
+        // Validate the first consideration item
+        ISeaport.ConsiderationItem memory nftItem = consideration[0];
+        if (
+            uint8(nftItem.itemType) < 2 ||
+            nftItem.startAmount != nftItem.endAmount
+        ) {
+            revert SeaportOrderIsInvalid();
+        }
+
+        // Validate the rest of consideration items
+        uint256 considerationLength = consideration.length;
+        for (uint256 i = 1; i < considerationLength; ) {
+            ISeaport.ConsiderationItem memory item = consideration[i];
+            if (
+                item.itemType != ISeaport.ItemType.ERC20 ||
+                item.token != address(WETH) ||
+                item.startAmount != item.endAmount
+            ) {
+                revert SeaportOrderIsInvalid();
+            }
+
+            unchecked {
+                ++i;
+            }
+        }
+
+        // Cache some fields for gas-efficiency
+        Forward protocol = forward;
+        address token = nftItem.token;
+        uint256 identifier = nftItem.identifierOrCriteria;
+
+        // Properly set the identifier in case of criteria bids
+        if (uint8(nftItem.itemType) > 3) {
+            identifier = criteriaResolvers[0].identifier;
+        }
+
+        // Ensure the token's deposit time is not too far in the past
+        bytes32 itemId = keccak256(abi.encode(token, identifier));
+        uint256 timeOfDeposit = depositTime[itemId];
+        if (
+            block.timestamp - timeOfDeposit > protocol.softWithdrawTimeLimit()
+        ) {
+            revert TokenDepositIsTooOld();
+        }
+
+        // Adjust the price to the filled amount
+        uint256 amount = (nftItem.endAmount * order.numerator) /
+            order.denominator;
+        uint256 totalPrice = (paymentItem.endAmount * order.numerator) /
+            order.denominator;
+
+        // Fetch the token's price
+        uint256 price = protocol.priceOracle().getPrice(
+            token,
+            identifier,
+            protocol.softWithdrawMaxAge(),
+            oracleData
+        );
+
+        // Ensure the bid's price is within `minPriceBps` of the token's price
+        if (totalPrice < (price * amount * protocol.minPriceBps()) / 10000) {
+            revert SeaportOrderIsUnderpriced();
+        }
+
+        {
+            // Fetch the token's royalties
+            (
+                address[] memory royaltyRecipients,
+                uint256[] memory royaltyAmounts
+            ) = protocol.royaltyEngine().getRoyaltyView(
+                    token,
+                    identifier,
+                    totalPrice
+                );
+
+            // Ensure the royalties are present in the payment items
+            // (ordering matters and should match the royalty engine)
+            uint256 diff = considerationLength - royaltyAmounts.length;
+            for (uint256 i = diff; i < considerationLength; ) {
+                if (
+                    consideration[i].recipient != royaltyRecipients[i - diff] ||
+                    // The royalty should be AT LEAST what's returned by the royalty registry
+                    consideration[i].endAmount < royaltyAmounts[i - diff]
+                ) {
+                    revert SeaportOrderRoyaltiesAreIncorrect();
+                }
+
+                unchecked {
+                    ++i;
+                }
+            }
+        }
+
+        // An approval is needed for paying the royalties
+        address conduit = forward.seaportConduit();
+        uint256 allowance = WETH.allowance(address(this), conduit);
+        if (allowance < type(uint256).max) {
+            WETH.approve(conduit, type(uint256).max);
+        }
+
+        // Fulfill bid
+        SEAPORT.fulfillAdvancedOrder(
+            order,
+            criteriaResolvers,
+            forward.seaportConduitKey(),
+            address(0)
+        );
+
+        // Forward any received WETH to the vault's owner
+        WETH.transfer(msg.sender, WETH.balanceOf(address(this)));
     }
 
     // Internal methods
@@ -325,17 +470,19 @@ contract Vault {
         // Ensure the token's deposit time is not too far in the past
         bytes32 itemId = keccak256(abi.encode(token, identifier));
         uint256 timeOfDeposit = depositTime[itemId];
-        if (block.timestamp - timeOfDeposit > forward.listTimeLimit()) {
+        if (
+            block.timestamp - timeOfDeposit > protocol.softWithdrawTimeLimit()
+        ) {
             revert TokenDepositIsTooOld();
         }
 
         // Ensure the listing's validity time is not more than the oracle's price max age
-        uint256 oraclePriceListMaxAge = protocol.oraclePriceListMaxAge();
+        uint256 oraclePriceListMaxAge = protocol.softWithdrawMaxAge();
         if (
             listingDetails.endTime - listingDetails.startTime >
             oraclePriceListMaxAge
         ) {
-            revert SeaportListingIsInvalid();
+            revert SeaportOrderIsInvalid();
         }
 
         // Fetch the token's price
@@ -348,7 +495,7 @@ contract Vault {
 
         // Ensure the listing's price is within `minPriceBps` of the token's price
         if (totalPrice < (price * amount * protocol.minPriceBps()) / 10000) {
-            revert SeaportListingIsUnderpriced();
+            revert SeaportOrderIsUnderpriced();
         }
 
         {
@@ -371,7 +518,7 @@ contract Vault {
                     // The royalty should be AT LEAST what's returned by the royalty registry
                     payments[i].amount < royaltyAmounts[i - diff]
                 ) {
-                    revert SeaportListingRoyaltiesAreIncorrect();
+                    revert SeaportOrderRoyaltiesAreIncorrect();
                 }
 
                 unchecked {
@@ -415,7 +562,7 @@ contract Vault {
                 abi.encodePacked(hex"1901", SEAPORT_DOMAIN_SEPARATOR, orderHash)
             )
         ) {
-            revert SeaportListingIsInvalid();
+            revert SeaportOrderIsInvalid();
         }
 
         // Ensure the underlying order was signed by the vault's owner
@@ -443,9 +590,8 @@ contract Vault {
         bytes32 itemId = keccak256(abi.encode(address(token), tokenId));
         depositTime[itemId] = block.timestamp;
 
-        address conduit = forward.seaportConduit();
-
         // Approve the token for listing if needed
+        address conduit = forward.seaportConduit();
         bool isApproved = token.isApprovedForAll(address(this), conduit);
         if (!isApproved) {
             token.setApprovalForAll(conduit, true);
@@ -472,9 +618,8 @@ contract Vault {
         bytes32 itemId = keccak256(abi.encode(address(token), id));
         depositTime[itemId] = block.timestamp;
 
-        address conduit = forward.seaportConduit();
-
         // Approve the token for listing if needed
+        address conduit = forward.seaportConduit();
         bool isApproved = token.isApprovedForAll(address(this), conduit);
         if (!isApproved) {
             token.setApprovalForAll(conduit, true);
